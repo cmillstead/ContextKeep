@@ -4,25 +4,42 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ContextKeep V1.0 - Memory Manager</title>
+    <title>ContextKeep V1.2 - Memory Manager</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 
 <body>
     <div class="container">
         <header>
-            <h1>🧠 ContextKeep Memory Manager</h1>
-            <p class="subtitle">V1.0</p>
+            <div class="header-inner">
+                <div class="logo-block">
+                    <span class="logo-icon">🧠</span>
+                    <div>
+                        <h1>ContextKeep</h1>
+                        <p class="subtitle">Memory Manager <span class="version-badge">V1.2</span></p>
+                    </div>
+                </div>
+                <div class="header-stats">
+                    <div class="stat-chip">
+                        <span class="stat-label">Memories</span>
+                        <span class="stat-value" id="memoryCount">—</span>
+                    </div>
+                </div>
+            </div>
         </header>
 
         <div class="toolbar">
             <div class="search-bar">
+                <span class="search-icon">⌕</span>
                 <input type="text" id="searchInput" placeholder="Search by title, key, or content..." />
             </div>
             <div class="view-controls">
-                <button id="gridViewBtn" class="btn btn-secondary active">Grid</button>
-                <button id="listViewBtn" class="btn btn-secondary">List</button>
-                <button id="calendarViewBtn" class="btn btn-secondary">Calendar</button>
+                <button id="gridViewBtn" class="btn btn-view active" title="Grid View">⊞ Grid</button>
+                <button id="listViewBtn" class="btn btn-view" title="List View">☰ List</button>
+                <button id="calendarViewBtn" class="btn btn-view" title="Calendar View">📅 Calendar</button>
                 <button id="newMemoryBtn" class="btn btn-primary">+ New Memory</button>
             </div>
         </div>
@@ -32,8 +49,12 @@
         </div>
 
         <div id="calendarContainer" class="calendar-view" style="display: none;">
+            <div class="calendar-nav">
+                <button id="calPrevBtn" class="btn btn-view" onclick="prevMonth()">‹ Prev</button>
+                <h2 id="calMonthLabel" class="cal-month-title"></h2>
+                <button id="calNextBtn" class="btn btn-view" onclick="nextMonth()">Next ›</button>
+            </div>
             <div id="calendarGrid"></div>
-            <div id="calendarList" class="calendar-list"></div>
         </div>
     </div>
 
@@ -42,11 +63,14 @@
         <div class="modal-content">
             <span class="close">&times;</span>
             <h2>Create New Memory</h2>
-            <input type="text" id="newKey" class="edit-title" placeholder="Memory Key (unique identifier)" />
-            <input type="text" id="newTitle" class="edit-title" placeholder="Title" />
-            <textarea id="newContent" class="edit-content" placeholder="Content"></textarea>
+            <label class="field-label">Key <span class="field-hint">(unique identifier)</span></label>
+            <input type="text" id="newKey" class="edit-title" placeholder="e.g. GJ_Project_Notes" />
+            <label class="field-label">Title</label>
+            <input type="text" id="newTitle" class="edit-title" placeholder="Human-readable name" />
+            <label class="field-label">Content</label>
+            <textarea id="newContent" class="edit-content" placeholder="Memory content..."></textarea>
             <div class="modal-actions">
-                <button id="saveNewBtn" class="btn btn-primary">Create</button>
+                <button id="saveNewBtn" class="btn btn-primary">Create Memory</button>
                 <button class="btn btn-secondary close">Cancel</button>
             </div>
         </div>
@@ -57,7 +81,7 @@
         <div class="modal-content">
             <span class="close">&times;</span>
             <h2 id="viewTitle"></h2>
-            <p class="meta"><strong>Key:</strong> <span id="viewKey"></span></p>
+            <p class="meta"><strong>Key:</strong> <span id="viewKey" class="mono-text"></span></p>
             <p class="meta"><strong>Updated:</strong> <span id="viewTimestamp"></span></p>
             <div id="viewContent" class="content-area"></div>
         </div>
@@ -68,10 +92,12 @@
         <div class="modal-content">
             <span class="close">&times;</span>
             <h2>Edit Memory</h2>
+            <label class="field-label">Title</label>
             <input type="text" id="editTitle" class="edit-title" placeholder="Title" />
+            <label class="field-label">Content</label>
             <textarea id="editContent" class="edit-content" placeholder="Content"></textarea>
             <div class="modal-actions">
-                <button id="saveEditBtn" class="btn btn-primary">Save</button>
+                <button id="saveEditBtn" class="btn btn-primary">Save Changes</button>
                 <button class="btn btn-secondary close">Cancel</button>
             </div>
         </div>
@@ -79,12 +105,12 @@
 
     <!-- Delete Confirmation Modal -->
     <div id="deleteModal" class="modal">
-        <div class="modal-content">
+        <div class="modal-content modal-content--narrow">
             <h2>⚠️ Confirm Deletion</h2>
-            <p>Are you sure you want to delete this memory?</p>
-            <p><strong id="deleteTitle"></strong></p>
+            <p class="delete-warning">This action cannot be undone.</p>
+            <p class="delete-target"><strong id="deleteTitle"></strong></p>
             <div class="modal-actions">
-                <button id="confirmDeleteBtn" class="btn btn-danger">Delete</button>
+                <button id="confirmDeleteBtn" class="btn btn-danger">Delete Permanently</button>
                 <button class="btn btn-secondary close">Cancel</button>
             </div>
         </div>

@@ -20,5 +20,13 @@ Thumbs.db
 DOCUMENTATION.md
 AGENTS.md
 GEMINI.md
+CLAUDE.md
 *.old
+
+# Config (use mcp_config.example.json as the public template)
+mcp_config.json
+
+# Showcase backups and editable sources
+Showcase_backup_*.png
+*.af
 

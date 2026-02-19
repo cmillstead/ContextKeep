@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ContextKeep V1.0 - MCP Server
+ContextKeep V1.2 - MCP Server
 Exposes memory tools to IDEs (VS Code, Cursor, etc.)
 """
 
@@ -121,8 +121,41 @@ async def list_recent_memories() -> str:
         raise
 
 
+@mcp.tool()
+async def list_all_memories() -> str:
+    """
+    List ALL stored memories as a complete directory — keys, titles, tags, and last-updated timestamps.
+
+    Use this as your FIRST step when you need to find a specific memory but are unsure of the
+    exact key. Pick the correct key from this list, then call retrieve_memory(key) directly.
+    This avoids unreliable fuzzy search and ensures accurate retrieval in one extra call.
+    """
+    print("DEBUG: list_all_memories called")
+    try:
+        memories = memory_manager.list_memories()
+        if not memories:
+            print("DEBUG: list_all_memories found 0 memories")
+            return "📭 No memories stored yet."
+
+        print(f"DEBUG: list_all_memories found {len(memories)} memories")
+        output = f"📚 Memory Directory — {len(memories)} total memories:\n"
+        output += "=" * 50 + "\n\n"
+        for mem in memories:
+            title = mem.get("title", mem["key"])
+            tags = ", ".join(mem.get("tags", [])) if mem.get("tags") else "none"
+            updated = mem.get("updated_at", "")[:16]
+            output += f"🔑 Key:     {mem['key']}\n"
+            output += f"   Title:   {title}\n"
+            output += f"   Tags:    {tags}\n"
+            output += f"   Updated: {updated}\n\n"
+        return output
+    except Exception as e:
+        print(f"DEBUG: list_all_memories failed: {e}")
+        raise
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="ContextKeep V1.0 - MCP Server")
+    parser = argparse.ArgumentParser(description="ContextKeep V1.2 - MCP Server")
     parser.add_argument(
         "--transport",
         choices=["stdio", "sse"],

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ContextKeep V1.0 - WebUI Server
+ContextKeep V1.2 - WebUI Server
 Provides a modern web interface for memory management
 """
 
@@ -123,6 +123,6 @@ def search_memories():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 if __name__ == '__main__':
-    print("🌐 Starting ContextKeep V1.0 WebUI...")
+    print("🌐 Starting ContextKeep V1.2 WebUI...")
     print("📍 Access at: http://localhost:5000")
     app.run(host='0.0.0.0', port=5000, debug=True)
