@@ -2,6 +2,7 @@ import json
 import os
 import hashlib
 import threading
+import unicodedata
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from core.encryption import encrypt, decrypt, is_encryption_enabled, DecryptionError
@@ -24,10 +25,11 @@ _SCHEMA_DEFAULTS = {
 
 
 class MemoryManager:
-    def __init__(self, cache_dir: Optional[Path] = None):
+    def __init__(self, cache_dir: Optional[Path] = None, max_content_size: int = 100 * 1024):
         self.cache_dir = cache_dir or DEFAULT_CACHE_DIR
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.cache_dir, 0o700)
+        self.max_content_size = max_content_size
         self._locks: Dict[str, threading.Lock] = {}
         self._locks_lock = threading.Lock()
 
@@ -40,11 +42,13 @@ class MemoryManager:
 
     def _get_file_path(self, key: str) -> Path:
         """Get the SHA-256 file path for a given memory key."""
+        key = unicodedata.normalize("NFC", key)
         safe_key = hashlib.sha256(key.encode()).hexdigest()
         return self.cache_dir / f"{safe_key}.json"
 
     def _get_legacy_file_path(self, key: str) -> Path:
         """Get the legacy MD5 file path for backward compatibility."""
+        key = unicodedata.normalize("NFC", key)
         safe_key = hashlib.md5(key.encode()).hexdigest()
         return self.cache_dir / f"{safe_key}.json"
 
@@ -147,6 +151,12 @@ class MemoryManager:
                 memory_data["chars"] = len(content)
                 memory_data["lines"] = len(content.splitlines())
 
+            # Check content size (including audit trail)
+            if len(memory_data["content"].encode("utf-8")) > self.max_content_size:
+                raise ValueError(
+                    "Content with audit trail exceeds max size (%d bytes)" % self.max_content_size
+                )
+
             # If updating, preserve fields AND check immutability (COMBINED)
             existing_path = self._migrate_if_needed(key)
             if existing_path and existing_path.exists():
@@ -196,6 +206,7 @@ class MemoryManager:
                 data["content"] = decrypt(data["content"])
             except DecryptionError:
                 data["content"] = "[DECRYPTION FAILED] Content cannot be decrypted. The encryption key may have changed."
+                data["decryption_failed"] = True
 
         return data
 
@@ -213,6 +224,7 @@ class MemoryManager:
                         data["content"] = decrypt(data["content"])
                     except DecryptionError:
                         data["content"] = "[DECRYPTION FAILED] Content cannot be decrypted."
+                        data["decryption_failed"] = True
                 # Add a snippet for display
                 data["snippet"] = (
                     data["content"][:100] + "..."
@@ -244,6 +256,7 @@ class MemoryManager:
                         mem["content"] = decrypt(mem["content"])
                     except DecryptionError:
                         mem["content"] = "[DECRYPTION FAILED] Content cannot be decrypted."
+                        mem["decryption_failed"] = True
                     mem["snippet"] = (
                         mem["content"][:100] + "..."
                         if len(mem["content"]) > 100
@@ -260,6 +273,7 @@ class MemoryManager:
                     mem["content"] = decrypt(mem["content"])
                 except DecryptionError:
                     mem["content"] = "[DECRYPTION FAILED] Content cannot be decrypted."
+                    mem["decryption_failed"] = True
                     mem["snippet"] = mem["content"]
                     continue
                 mem["snippet"] = (
@@ -296,11 +310,17 @@ class MemoryManager:
             file_path = self._get_file_path(key)
             if file_path.exists():
                 file_path.unlink()
+                # Clean up per-key lock
+                with self._locks_lock:
+                    self._locks.pop(key, None)
                 return True
             # Check legacy MD5 path
             legacy_path = self._get_legacy_file_path(key)
             if legacy_path.exists():
                 legacy_path.unlink()
+                # Clean up per-key lock
+                with self._locks_lock:
+                    self._locks.pop(key, None)
                 return True
             return False
 

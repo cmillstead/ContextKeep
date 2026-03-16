@@ -313,7 +313,7 @@ class TestDecryptionGracefulDegradation:
         import core.encryption as enc_module
         with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-1"}):
             manager.store_memory("enc-fail", "secret data", source="test", created_by="test")
-        enc_module._fernet_cache.clear()
+        enc_module._get_fernet.cache_clear()
         with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-2"}):
             result = manager.retrieve_memory("enc-fail")
         assert result is not None
@@ -324,7 +324,7 @@ class TestDecryptionGracefulDegradation:
         import core.encryption as enc_module
         with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-1"}):
             manager.store_memory("enc-list-fail", "secret", source="test", created_by="test")
-        enc_module._fernet_cache.clear()
+        enc_module._get_fernet.cache_clear()
         with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-2"}):
             memories = manager.list_memories()
         assert len(memories) == 1
@@ -335,7 +335,7 @@ class TestDecryptionGracefulDegradation:
         import core.encryption as enc_module
         with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-1"}):
             manager.store_memory("search-fail", "secret findable", source="test", created_by="test")
-        enc_module._fernet_cache.clear()
+        enc_module._get_fernet.cache_clear()
         with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-2"}):
             results = manager.search_memories("findable")
             assert isinstance(results, list)
@@ -409,3 +409,132 @@ class TestPerKeyLocking:
         """MemoryManager should have a _locks dict attribute."""
         assert hasattr(manager, "_locks")
         assert isinstance(manager._locks, dict)
+
+
+class TestUnicodeNFCNormalization:
+    """Task 1.1: Keys are NFC-normalized so NFC and NFD forms resolve to the same file."""
+
+    def test_nfc_nfd_key_resolves_to_same_memory(self, manager):
+        """Store with NFC 'cafe\u0301' (U+00E9), retrieve with NFD 'cafe\u0301' (e+U+0301)."""
+        import unicodedata
+        nfc_key = "caf\u00e9"  # U+00E9
+        nfd_key = "cafe\u0301"  # e + U+0301
+        assert unicodedata.normalize("NFC", nfc_key) == unicodedata.normalize("NFC", nfd_key)
+        assert nfc_key != nfd_key  # They differ at byte level
+
+        manager.store_memory(nfc_key, "espresso", source="test", created_by="test")
+        result = manager.retrieve_memory(nfd_key)
+        assert result is not None
+        assert result["content"] == "espresso"
+
+    def test_nfc_nfd_key_same_file_path(self, manager):
+        """_get_file_path returns the same path for NFC and NFD forms."""
+        nfc_key = "caf\u00e9"
+        nfd_key = "cafe\u0301"
+        assert manager._get_file_path(nfc_key) == manager._get_file_path(nfd_key)
+
+    def test_nfc_nfd_legacy_file_path(self, manager):
+        """_get_legacy_file_path returns the same path for NFC and NFD forms."""
+        nfc_key = "caf\u00e9"
+        nfd_key = "cafe\u0301"
+        assert manager._get_legacy_file_path(nfc_key) == manager._get_legacy_file_path(nfd_key)
+
+
+class TestLockCleanupOnDelete:
+    """Task 1.4: Per-key lock is removed from _locks dict after delete."""
+
+    def test_lock_removed_after_delete(self, manager):
+        key = "lock-cleanup"
+        manager.store_memory(key, "content", source="test", created_by="test")
+        # Access forces lock creation
+        assert key not in manager._locks or True  # may or may not exist yet
+        manager.retrieve_memory(key)  # doesn't create lock, but store did via _get_key_lock
+        # Store uses _get_key_lock, so lock should exist
+        manager.store_memory(key, "v2", source="test", created_by="test")
+        assert key in manager._locks
+
+        manager.delete_memory(key)
+        assert key not in manager._locks
+
+    def test_lock_removed_after_force_delete(self, manager):
+        key = "lock-force-del"
+        manager.store_memory(key, "content", source="test", created_by="test")
+        manager.set_immutable(key, True)
+        assert key in manager._locks
+        manager.delete_memory(key, force=True)
+        assert key not in manager._locks
+
+
+class TestDecryptionFailedFlag:
+    """Task 1.5: decryption_failed=True set when DecryptionError caught."""
+
+    def test_retrieve_sets_decryption_failed_flag(self, manager):
+        import core.encryption as enc_module
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-A"}):
+            manager.store_memory("flag-test", "secret", source="test", created_by="test")
+        enc_module._get_fernet.cache_clear()
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-B"}):
+            result = manager.retrieve_memory("flag-test")
+        assert result is not None
+        assert result.get("decryption_failed") is True
+        assert "[DECRYPTION FAILED]" in result["content"]
+
+    def test_list_memories_sets_decryption_failed_flag(self, manager):
+        import core.encryption as enc_module
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-A"}):
+            manager.store_memory("flag-list", "secret", source="test", created_by="test")
+        enc_module._get_fernet.cache_clear()
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-B"}):
+            memories = manager.list_memories()
+        assert len(memories) == 1
+        assert memories[0].get("decryption_failed") is True
+
+    def test_search_memories_sets_decryption_failed_flag(self, manager):
+        import core.encryption as enc_module
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-A"}):
+            manager.store_memory("flag-search", "secret", source="test", created_by="test")
+        enc_module._get_fernet.cache_clear()
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-B"}):
+            # Search by key name to hit the key/title match branch
+            results = manager.search_memories("flag-search")
+        assert len(results) == 1
+        assert results[0].get("decryption_failed") is True
+
+    def test_no_decryption_failed_on_success(self, manager):
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-A"}):
+            manager.store_memory("flag-ok", "secret", source="test", created_by="test")
+            result = manager.retrieve_memory("flag-ok")
+        assert result.get("decryption_failed") is not True
+
+
+class TestAuditTrailSizeCheck:
+    """Task 1.6: ValueError raised when content+audit exceeds max_content_size."""
+
+    def test_audit_trail_exceeds_max_size_raises(self, tmp_path):
+        small_max = 100
+        mgr = MemoryManager(cache_dir=tmp_path / "data" / "memories", max_content_size=small_max)
+        content = "x" * 80  # 80 bytes
+        # With audit entry, total will exceed 100 bytes
+        with pytest.raises(ValueError, match="exceeds max size"):
+            mgr.store_memory(
+                "size-test", content, source="test", created_by="test",
+                audit_entry="This audit entry pushes it over the limit",
+            )
+
+    def test_content_within_max_size_ok(self, tmp_path):
+        mgr = MemoryManager(cache_dir=tmp_path / "data" / "memories", max_content_size=1024)
+        result = mgr.store_memory(
+            "size-ok", "small content", source="test", created_by="test",
+            audit_entry="Short audit",
+        )
+        assert result is not None
+
+    def test_content_without_audit_exceeds_max_size(self, tmp_path):
+        small_max = 50
+        mgr = MemoryManager(cache_dir=tmp_path / "data" / "memories", max_content_size=small_max)
+        content = "x" * 60  # 60 bytes, no audit needed
+        with pytest.raises(ValueError, match="exceeds max size"):
+            mgr.store_memory("size-no-audit", content, source="test", created_by="test")
+
+    def test_default_max_content_size(self, manager):
+        assert manager.max_content_size == 100 * 1024
