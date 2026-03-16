@@ -4,6 +4,18 @@ import pytest
 from webui import app
 
 
+@pytest.fixture(autouse=True)
+def _isolate_data(tmp_path):
+    """Redirect memory_manager to tmp_path for test isolation."""
+    from core.memory_manager import memory_manager
+    original_dir = memory_manager.cache_dir
+    test_dir = tmp_path / "data" / "memories"
+    test_dir.mkdir(parents=True)
+    memory_manager.cache_dir = test_dir
+    yield
+    memory_manager.cache_dir = original_dir
+
+
 @pytest.fixture
 def client():
     app.config["TESTING"] = True
@@ -70,23 +82,16 @@ class TestGenericErrors:
 class TestImmutabilityToggle:
     def test_put_with_immutable_field(self, client):
         token = _get_csrf_token(client)
-        # Use a unique key to avoid leftover locked data from previous runs
-        key = "lock-toggle-test"
-        # Ensure clean state: unlock if previously locked
-        client.put(f"/api/memories/{key}",
-                   json={"content": "reset", "title": "t", "tags": [], "immutable": False},
-                   headers={"X-CSRF-Token": token},
-                   content_type="application/json")
         client.post("/api/memories",
-                     json={"key": key, "content": "test"},
+                     json={"key": "lock-test", "content": "test"},
                      headers={"X-CSRF-Token": token},
                      content_type="application/json")
-        resp = client.put(f"/api/memories/{key}",
+        resp = client.put("/api/memories/lock-test",
                           json={"content": "test", "title": "test", "tags": [], "immutable": True},
                           headers={"X-CSRF-Token": token},
                           content_type="application/json")
         assert resp.status_code == 200
-        resp = client.get(f"/api/memories/{key}")
+        resp = client.get("/api/memories/lock-test")
         data = json.loads(resp.data)
         assert data["memory"]["immutable"] is True
 

@@ -8,15 +8,6 @@ from unittest.mock import patch
 from core.memory_manager import MemoryManager
 
 
-@pytest.fixture
-def manager(tmp_path):
-    """Create a MemoryManager with a temp data directory."""
-    data_dir = tmp_path / "data" / "memories"
-    data_dir.mkdir(parents=True)
-    mgr = MemoryManager()
-    mgr.cache_dir = data_dir
-    return mgr
-
 
 class TestSHA256Migration:
     def test_new_memory_uses_sha256_filename(self, manager):
@@ -228,3 +219,31 @@ class TestDeleteImmutabilityGuard:
         manager.set_immutable("del-force", True)
         assert manager.delete_memory("del-force", force=True) is True
         assert manager.retrieve_memory("del-force") is None
+
+
+class TestStoreMemorySingleRead:
+    def test_store_existing_reads_file_once(self, manager):
+        """store_memory on existing key should only call _migrate_if_needed once."""
+        manager.store_memory("single-read", "v1", source="test", created_by="test")
+        original_migrate = manager._migrate_if_needed
+        call_count = 0
+        def counting_migrate(key):
+            nonlocal call_count
+            call_count += 1
+            return original_migrate(key)
+        manager._migrate_if_needed = counting_migrate
+        manager.store_memory("single-read", "v2", source="test", created_by="test")
+        assert call_count == 1
+
+
+class TestDeleteLegacyImmutabilityCheck:
+    def test_delete_immutable_legacy_md5_blocked(self, manager):
+        """Immutable memory at MD5 path should block delete without force."""
+        key = "legacy-imm"
+        md5_hash = hashlib.md5(key.encode()).hexdigest()
+        data = {"key": key, "content": "old", "title": key,
+                "tags": [], "created_at": "2025-01-01", "updated_at": "2025-01-01",
+                "lines": 1, "chars": 3, "immutable": True}
+        (manager.cache_dir / f"{md5_hash}.json").write_text(json.dumps(data))
+        with pytest.raises(ValueError, match="immutable"):
+            manager.delete_memory(key)

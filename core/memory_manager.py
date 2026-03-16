@@ -3,16 +3,12 @@ import os
 import hashlib
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from datetime import datetime
-
 from core.encryption import encrypt, decrypt, is_encryption_enabled
 from core.utils import now_timestamp
 
 # Configuration
 PROJECT_ROOT = Path(__file__).parent.parent
-CACHE_DIR = PROJECT_ROOT / "data" / "memories"
-CACHE_DIR.mkdir(parents=True, exist_ok=True)
-os.chmod(CACHE_DIR, 0o700)
+DEFAULT_CACHE_DIR = PROJECT_ROOT / "data" / "memories"
 
 # Schema defaults for legacy memories missing new fields
 _SCHEMA_DEFAULTS = {
@@ -26,8 +22,10 @@ _SCHEMA_DEFAULTS = {
 
 
 class MemoryManager:
-    def __init__(self):
-        self.cache_dir = CACHE_DIR
+    def __init__(self, cache_dir: Optional[Path] = None):
+        self.cache_dir = cache_dir or DEFAULT_CACHE_DIR
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.cache_dir, 0o700)
 
     def _get_file_path(self, key: str) -> Path:
         """Get the SHA-256 file path for a given memory key."""
@@ -101,20 +99,6 @@ class MemoryManager:
         file_path = self._get_file_path(key)
         now = now_timestamp()
 
-        # Defense-in-depth: check immutability at the core layer
-        if not force:
-            check_path = self._migrate_if_needed(key)
-            if check_path and check_path.exists():
-                try:
-                    with open(check_path, "r", encoding="utf-8") as f:
-                        check_data = json.load(f)
-                    if check_data.get("immutable"):
-                        raise ValueError(
-                            f"Memory '{key}' is immutable. Use force=True to override."
-                        )
-                except (json.JSONDecodeError, OSError):
-                    pass
-
         memory_data = {
             "key": key,
             "title": title or key,
@@ -134,18 +118,22 @@ class MemoryManager:
 
         # Append audit entry if provided
         if audit_entry:
-            timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-            content = f"{content}\n\n---\n**{timestamp} | {audit_entry}**"
+            content = f"{content}\n\n---\n**{now} | {audit_entry}**"
             memory_data["content"] = content
             memory_data["chars"] = len(content)
             memory_data["lines"] = len(content.splitlines())
 
-        # If updating, preserve created_at, title, source, created_by, immutable
+        # If updating, preserve fields AND check immutability (COMBINED)
         existing_path = self._migrate_if_needed(key)
         if existing_path and existing_path.exists():
             try:
                 with open(existing_path, "r", encoding="utf-8") as f:
                     existing = json.load(f)
+                # Defense-in-depth: check immutability at the core layer
+                if not force and existing.get("immutable"):
+                    raise ValueError(
+                        f"Memory '{key}' is immutable. Use force=True to override."
+                    )
                 memory_data["created_at"] = existing.get("created_at", now)
                 if not title:
                     memory_data["title"] = existing.get("title", key)
@@ -210,16 +198,38 @@ class MemoryManager:
 
     def search_memories(self, query: str) -> List[Dict[str, Any]]:
         """Search memories by key, title, or content."""
-        query = query.lower()
+        query_lower = query.lower()
         results = []
-        all_memories = self.list_memories()
-
+        # First pass: search key/title without decrypting content
+        all_memories = self.list_memories(decrypt_content=False)
+        needs_content_search = []
         for mem in all_memories:
             if (
-                query in mem["key"].lower()
-                or query in mem.get("title", "").lower()
-                or query in mem["content"].lower()
+                query_lower in mem["key"].lower()
+                or query_lower in mem.get("title", "").lower()
             ):
+                # Match on key/title — decrypt content for the result
+                if mem.get("encrypted"):
+                    mem["content"] = decrypt(mem["content"])
+                    mem["snippet"] = (
+                        mem["content"][:100] + "..."
+                        if len(mem["content"]) > 100
+                        else mem["content"]
+                    )
+                results.append(mem)
+            else:
+                needs_content_search.append(mem)
+
+        # Second pass: decrypt and search content only for non-matches
+        for mem in needs_content_search:
+            if mem.get("encrypted"):
+                mem["content"] = decrypt(mem["content"])
+                mem["snippet"] = (
+                    mem["content"][:100] + "..."
+                    if len(mem["content"]) > 100
+                    else mem["content"]
+                )
+            if query_lower in mem["content"].lower():
                 results.append(mem)
 
         return results
@@ -231,7 +241,9 @@ class MemoryManager:
         """
         # Defense-in-depth: check immutability at the core layer
         if not force:
-            check_path = self._get_file_path(key)
+            check_path = self._migrate_if_needed(key)
+            if check_path is None:
+                check_path = self._get_file_path(key)
             if check_path.exists():
                 try:
                     with open(check_path, "r", encoding="utf-8") as f:
