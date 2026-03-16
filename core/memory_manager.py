@@ -4,7 +4,7 @@ import hashlib
 import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from core.encryption import encrypt, decrypt, is_encryption_enabled
+from core.encryption import encrypt, decrypt, is_encryption_enabled, DecryptionError
 from core.utils import now_timestamp
 
 # Configuration
@@ -190,7 +190,10 @@ class MemoryManager:
 
         # Decrypt content if it was encrypted
         if data.get("encrypted"):
-            data["content"] = decrypt(data["content"])
+            try:
+                data["content"] = decrypt(data["content"])
+            except DecryptionError:
+                data["content"] = "[DECRYPTION FAILED] Content cannot be decrypted. The encryption key may have changed."
 
         return data
 
@@ -204,7 +207,10 @@ class MemoryManager:
                 data = self._apply_schema_defaults(data)
                 # Decrypt content for search/snippet
                 if decrypt_content and data.get("encrypted"):
-                    data["content"] = decrypt(data["content"])
+                    try:
+                        data["content"] = decrypt(data["content"])
+                    except DecryptionError:
+                        data["content"] = "[DECRYPTION FAILED] Content cannot be decrypted."
                 # Add a snippet for display
                 data["snippet"] = (
                     data["content"][:100] + "..."
@@ -232,7 +238,10 @@ class MemoryManager:
             ):
                 # Match on key/title — decrypt content for the result
                 if mem.get("encrypted"):
-                    mem["content"] = decrypt(mem["content"])
+                    try:
+                        mem["content"] = decrypt(mem["content"])
+                    except DecryptionError:
+                        mem["content"] = "[DECRYPTION FAILED] Content cannot be decrypted."
                     mem["snippet"] = (
                         mem["content"][:100] + "..."
                         if len(mem["content"]) > 100
@@ -245,7 +254,12 @@ class MemoryManager:
         # Second pass: decrypt and search content only for non-matches
         for mem in needs_content_search:
             if mem.get("encrypted"):
-                mem["content"] = decrypt(mem["content"])
+                try:
+                    mem["content"] = decrypt(mem["content"])
+                except DecryptionError:
+                    mem["content"] = "[DECRYPTION FAILED] Content cannot be decrypted."
+                    mem["snippet"] = mem["content"]
+                    continue
                 mem["snippet"] = (
                     mem["content"][:100] + "..."
                     if len(mem["content"]) > 100

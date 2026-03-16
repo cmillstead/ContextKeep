@@ -19,6 +19,11 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
+
+class DecryptionError(ValueError):
+    """Raised when decryption fails due to invalid token or wrong key."""
+    pass
+
 # ---------------------------------------------------------------------------
 # Project root & salt helpers
 # ---------------------------------------------------------------------------
@@ -142,4 +147,10 @@ def decrypt(ciphertext: str) -> str:
 
     # Fallback: try static salt for pre-migration tokens
     f_static = _get_fernet(secret, _STATIC_SALT)
-    return f_static.decrypt(ciphertext.encode()).decode()
+    try:
+        return f_static.decrypt(ciphertext.encode()).decode()
+    except InvalidToken:
+        raise DecryptionError(
+            "Failed to decrypt content. The encryption key may have changed "
+            "or the data may be corrupted."
+        )

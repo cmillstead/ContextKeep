@@ -307,6 +307,40 @@ class TestDeleteLegacyImmutabilityCheck:
             manager.delete_memory(key)
 
 
+class TestDecryptionGracefulDegradation:
+    def test_retrieve_returns_placeholder_on_decryption_error(self, manager):
+        """If decryption fails, retrieve_memory returns memory with error placeholder."""
+        import core.encryption as enc_module
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-1"}):
+            manager.store_memory("enc-fail", "secret data", source="test", created_by="test")
+        enc_module._fernet_cache.clear()
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-2"}):
+            result = manager.retrieve_memory("enc-fail")
+        assert result is not None
+        assert "[DECRYPTION FAILED]" in result["content"]
+
+    def test_list_memories_includes_failed_decryption(self, manager):
+        """list_memories should include memories that fail decryption, with placeholder."""
+        import core.encryption as enc_module
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-1"}):
+            manager.store_memory("enc-list-fail", "secret", source="test", created_by="test")
+        enc_module._fernet_cache.clear()
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-2"}):
+            memories = manager.list_memories()
+        assert len(memories) == 1
+        assert "[DECRYPTION FAILED]" in memories[0]["content"]
+
+    def test_search_memories_handles_decryption_error(self, manager):
+        """search_memories should not crash on decryption errors."""
+        import core.encryption as enc_module
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-1"}):
+            manager.store_memory("search-fail", "secret findable", source="test", created_by="test")
+        enc_module._fernet_cache.clear()
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-2"}):
+            results = manager.search_memories("findable")
+            assert isinstance(results, list)
+
+
 class TestPerKeyLocking:
     def test_concurrent_writes_serialized(self, manager):
         """Two threads writing the same key should not corrupt data."""

@@ -80,12 +80,13 @@ def test_different_secrets_produce_different_ciphertext():
 
 
 def test_wrong_secret_fails_decrypt(salt_dir):
+    from core.encryption import DecryptionError
     plaintext = "Sensitive data"
     with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "correct-secret"}):
         ciphertext = encrypt(plaintext)
     enc._fernet_cache.clear()
     with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "wrong-secret"}):
-        with pytest.raises(Exception):
+        with pytest.raises(DecryptionError):
             decrypt(ciphertext)
 
 
@@ -232,3 +233,34 @@ class TestSaltFilePermissions:
     def test_check_salt_permissions_ok_when_no_file(self, salt_dir):
         """check_salt_permissions should return True if salt file doesn't exist yet."""
         assert enc.check_salt_permissions() is True
+
+
+# ---------------------------------------------------------------------------
+# TestDecryptionError
+# ---------------------------------------------------------------------------
+
+
+class TestDecryptionError:
+    def test_decrypt_invalid_token_raises_decryption_error(self, salt_dir):
+        """decrypt() with a bad token should raise DecryptionError, not InvalidToken."""
+        from core.encryption import DecryptionError
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "test-secret"}):
+            encrypt("trigger salt")
+            enc._fernet_cache.clear()
+            with pytest.raises(DecryptionError):
+                decrypt("not-a-valid-fernet-token")
+
+    def test_decrypt_wrong_key_raises_decryption_error(self, salt_dir):
+        """decrypt() with wrong key should raise DecryptionError."""
+        from core.encryption import DecryptionError
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "correct-key"}):
+            ct = encrypt("secret")
+        enc._fernet_cache.clear()
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "wrong-key"}):
+            with pytest.raises(DecryptionError):
+                decrypt(ct)
+
+    def test_decryption_error_is_value_error_subclass(self):
+        """DecryptionError should be a ValueError subclass."""
+        from core.encryption import DecryptionError
+        assert issubclass(DecryptionError, ValueError)
