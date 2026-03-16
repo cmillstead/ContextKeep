@@ -2,12 +2,11 @@ import os
 import sys
 import subprocess
 import json
-import shutil
 from pathlib import Path
 
 def print_header():
     print("="*60)
-    print("      ContextKeep V1.0 - Installation Wizard")
+    print("      ContextKeep V1.2 - Installation Wizard")
     print("="*60)
     print()
 

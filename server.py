@@ -33,6 +33,8 @@ RATE_LIMIT_WINDOW = 60   # seconds
 # ---------------------------------------------------------------------------
 # Rate limiter (thread-safe sliding window)
 # ---------------------------------------------------------------------------
+# threading.Lock is used here because FastMCP may run tool handlers in a
+# thread-pool, so a single Lock protects the shared timestamps list.
 class _RateLimiter:
     """Thread-safe sliding-window rate limiter."""
 
@@ -94,8 +96,9 @@ async def store_memory(key: str, content: str, tags: str = "", title: str = "") 
         return "Rate limit exceeded (max %d writes/min). Try again later." % RATE_LIMIT_WRITES
 
     # --- Gate: content size ---
-    if len(content.encode("utf-8")) > MAX_CONTENT_SIZE:
-        logger.warning("Content too large for key='%s' (%d bytes)", key, len(content.encode("utf-8")))
+    content_bytes = len(content.encode("utf-8"))
+    if content_bytes > MAX_CONTENT_SIZE:
+        logger.warning("Content too large for key='%s' (%d bytes)", key, content_bytes)
         return "Content too large (max %d bytes)." % MAX_CONTENT_SIZE
 
     # --- Gate: immutability ---
@@ -110,15 +113,7 @@ async def store_memory(key: str, content: str, tags: str = "", title: str = "") 
     try:
         tag_list = [t.strip() for t in tags.split(",")] if tags else []
 
-        # Create timestamp
-        from datetime import datetime
-        timestamp = datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')
-
-        # Append log to content
-        if existing:
-            content = f"{content}\n\n---\n**{timestamp} | AI Update via MCP**"
-        else:
-            content = f"{content}\n\n---\n**{timestamp} | Created via MCP**"
+        audit = "AI Update via MCP" if existing else "Created via MCP"
 
         result = memory_manager.store_memory(
             key,
@@ -129,6 +124,7 @@ async def store_memory(key: str, content: str, tags: str = "", title: str = "") 
             created_by="mcp-tool",
             suspicious=scan["suspicious"],
             matched_patterns=scan["matched_patterns"],
+            audit_entry=audit,
         )
         flags = _provenance_flags(result)
         logger.debug("store_memory success for key='%s'", key)
@@ -288,26 +284,17 @@ async def mark_immutable(key: str) -> str:
     """
     logger.debug("mark_immutable called for key='%s'", key)
 
-    file_path = memory_manager._get_file_path(key)
-    # Also check legacy migration
-    migrated = memory_manager._migrate_if_needed(key)
-    if migrated:
-        file_path = migrated
-
-    if not file_path.exists():
+    existing = memory_manager.retrieve_memory(key)
+    if existing is None:
         return "Memory not found: '%s'" % key
 
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return "Memory not found: '%s'" % key
-
-    if data.get("immutable"):
+    if existing.get("immutable"):
         return "Memory '%s' is already immutable (LOCKED)." % key
 
-    data["immutable"] = True
-    memory_manager._write_json(file_path, data)
+    result = memory_manager.set_immutable(key, True)
+    if result is None:
+        return "Memory not found: '%s'" % key
+
     logger.info("Marked memory as immutable key='%s'", key)
     return "Memory '%s' is now immutable (LOCKED). Only the WebUI can unlock it." % key
 

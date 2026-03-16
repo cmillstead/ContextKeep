@@ -150,3 +150,81 @@ class TestErrorHandling:
         result = manager.retrieve_memory("alive")
         assert result["content"] == "test"
         assert manager.retrieve_memory("nonexistent") is None
+
+
+class TestSetImmutable:
+    def test_set_immutable_true(self, manager):
+        manager.store_memory("imm-test", "content", source="test", created_by="test")
+        result = manager.set_immutable("imm-test", True)
+        assert result is not None
+        assert result["immutable"] is True
+        mem = manager.retrieve_memory("imm-test")
+        assert mem["immutable"] is True
+
+    def test_set_immutable_false(self, manager):
+        manager.store_memory("imm-test2", "content", source="test", created_by="test")
+        manager.set_immutable("imm-test2", True)
+        result = manager.set_immutable("imm-test2", False)
+        assert result["immutable"] is False
+
+    def test_set_immutable_nonexistent_returns_none(self, manager):
+        result = manager.set_immutable("no-such-key", True)
+        assert result is None
+
+
+class TestListMemoriesDecryptParam:
+    def test_list_memories_no_decrypt(self, manager):
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "test-key"}):
+            manager.store_memory("enc-list", "secret content", source="test", created_by="test")
+            memories = manager.list_memories(decrypt_content=False)
+            assert len(memories) == 1
+            assert memories[0]["content"] != "secret content"
+            assert memories[0]["encrypted"] is True
+
+
+class TestAuditEntry:
+    def test_audit_entry_appended_to_content(self, manager):
+        manager.store_memory(
+            "audit-test", "base content",
+            source="test", created_by="test",
+            audit_entry="Created via test",
+        )
+        mem = manager.retrieve_memory("audit-test")
+        assert "base content" in mem["content"]
+        assert "Created via test" in mem["content"]
+        assert "---" in mem["content"]
+
+    def test_no_audit_entry_leaves_content_unchanged(self, manager):
+        manager.store_memory("no-audit", "plain content", source="test", created_by="test")
+        mem = manager.retrieve_memory("no-audit")
+        assert mem["content"] == "plain content"
+
+
+class TestStoreImmutabilityGuard:
+    def test_store_to_immutable_memory_blocked(self, manager):
+        manager.store_memory("guard-test", "original", source="test", created_by="test")
+        manager.set_immutable("guard-test", True)
+        with pytest.raises(ValueError, match="immutable"):
+            manager.store_memory("guard-test", "overwrite", source="test", created_by="test")
+
+    def test_store_to_immutable_memory_force(self, manager):
+        manager.store_memory("guard-force", "original", source="test", created_by="test")
+        manager.set_immutable("guard-force", True)
+        result = manager.store_memory(
+            "guard-force", "overwrite", source="test", created_by="test", force=True
+        )
+        assert "overwrite" in result["content"]
+
+
+class TestDeleteImmutabilityGuard:
+    def test_delete_immutable_memory_blocked(self, manager):
+        manager.store_memory("del-guard", "content", source="test", created_by="test")
+        manager.set_immutable("del-guard", True)
+        with pytest.raises(ValueError, match="immutable"):
+            manager.delete_memory("del-guard")
+
+    def test_delete_immutable_memory_force(self, manager):
+        manager.store_memory("del-force", "content", source="test", created_by="test")
+        manager.set_immutable("del-force", True)
+        assert manager.delete_memory("del-force", force=True) is True
+        assert manager.retrieve_memory("del-force") is None

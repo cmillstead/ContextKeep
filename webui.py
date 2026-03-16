@@ -5,7 +5,6 @@ Provides a modern web interface for memory management
 """
 
 from flask import Flask, render_template, jsonify, request
-from datetime import datetime
 from pathlib import Path
 import json
 import logging
@@ -16,6 +15,7 @@ import sys
 # Add parent directory to path to import memory_manager
 sys.path.insert(0, str(Path(__file__).parent))
 from core.memory_manager import memory_manager
+from core.content_scanner import scan_content
 
 app = Flask(__name__)
 app.secret_key = os.urandom(32)
@@ -90,7 +90,10 @@ def get_memory(key):
 def create_memory():
     """Create a new memory"""
     try:
-        data = request.json
+        data = request.get_json(silent=True)
+        if not data:
+            return jsonify({"success": False, "error": "Request body is required"}), 400
+
         key = data.get("key", "")
         title = data.get("title", "")
         content = data.get("content", "")
@@ -99,13 +102,14 @@ def create_memory():
         if not key:
             return jsonify({"success": False, "error": "Key is required"}), 400
 
-        # Add creation timestamp
-        timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-        content_with_log = f"{content}\n\n---\n**Created:** {timestamp}"
+        scan = scan_content(content)
 
         result = memory_manager.store_memory(
-            key, content_with_log, tags, title,
+            key, content, tags, title,
             source="human", created_by="webui",
+            suspicious=scan["suspicious"],
+            matched_patterns=scan["matched_patterns"],
+            audit_entry="Created via WebUI",
         )
         return jsonify({"success": True, "memory": result})
     except Exception:
@@ -117,53 +121,41 @@ def create_memory():
 def update_memory(key):
     """Update a memory (including title)"""
     try:
-        data = request.json
+        data = request.get_json(silent=True)
+        if not data:
+            return jsonify({"success": False, "error": "Request body is required"}), 400
+
         content = data.get("content", "")
         title = data.get("title", "")
         tags = data.get("tags", [])
-        action = data.get("action", "Manual Edit")  # Track what kind of edit
+        action = data.get("action", "Manual Edit")
 
-        # Get existing memory to check for changes
+        # Check immutability — allow only immutability toggle, block content changes
         existing = memory_manager.retrieve_memory(key)
+        if existing and existing.get("immutable"):
+            is_toggle_only = "immutable" in data and not data["immutable"]
+            if not is_toggle_only:
+                return jsonify({"success": False, "error": "Memory is immutable (LOCKED). Unlock it first."}), 403
+            # Handle immutable toggle only
+            memory_manager.set_immutable(key, False)
+            result = memory_manager.retrieve_memory(key)
+            return jsonify({"success": True, "memory": result})
 
-        # Create detailed edit log
-        timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-
-        # Determine what changed
-        changes = []
-        if existing:
-            if existing.get("title") != title:
-                changes.append(
-                    f"Title changed from '{existing.get('title')}' to '{title}'"
-                )
-            if existing.get("content") != content:
-                changes.append("Content modified")
-
-        # Build log entry
-        if changes:
-            change_description = " | ".join(changes)
-            log_entry = (
-                f"\n\n---\n**{timestamp} | {action}**\n{change_description}"
-            )
-        else:
-            log_entry = f"\n\n---\n**{timestamp} | {action}**"
-
-        content_with_log = f"{content}{log_entry}"
+        scan = scan_content(content)
 
         result = memory_manager.store_memory(
-            key, content_with_log, tags, title,
+            key, content, tags, title,
             source="human", created_by="webui",
+            suspicious=scan["suspicious"],
+            matched_patterns=scan["matched_patterns"],
+            audit_entry=f"{action} via WebUI",
         )
 
-        # Handle immutable toggle via direct file write
+        # Handle immutable toggle
         if "immutable" in data:
-            file_path = memory_manager._get_file_path(key)
-            if file_path.exists():
-                with open(file_path, "r", encoding="utf-8") as f:
-                    mem_data = json.load(f)
-                mem_data["immutable"] = bool(data["immutable"])
-                memory_manager._write_json(file_path, mem_data)
-                result["immutable"] = mem_data["immutable"]
+            updated = memory_manager.set_immutable(key, bool(data["immutable"]))
+            if updated:
+                result["immutable"] = updated["immutable"]
 
         return jsonify({"success": True, "memory": result})
     except Exception:
@@ -175,6 +167,11 @@ def update_memory(key):
 def delete_memory(key):
     """Delete a memory"""
     try:
+        # Check immutability
+        existing = memory_manager.retrieve_memory(key)
+        if existing and existing.get("immutable"):
+            return jsonify({"success": False, "error": "Memory is immutable (LOCKED). Unlock it first."}), 403
+
         success = memory_manager.delete_memory(key)
         if success:
             return jsonify({"success": True})
