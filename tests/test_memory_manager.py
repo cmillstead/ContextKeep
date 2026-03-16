@@ -236,6 +236,63 @@ class TestStoreMemorySingleRead:
         assert call_count == 1
 
 
+class TestAtomicWrite:
+    def test_write_json_is_atomic(self, manager, tmp_path):
+        """_write_json should write to a temp file then os.replace to target."""
+        import unittest.mock as mock
+        target = manager.cache_dir / "atomic_test.json"
+        data = {"key": "test", "content": "hello"}
+
+        with mock.patch("core.memory_manager.os.replace", wraps=os.replace) as mock_replace:
+            manager._write_json(target, data)
+            assert mock_replace.call_count == 1
+            call_args = mock_replace.call_args
+            src = call_args[0][0]
+            dst = call_args[0][1]
+            assert dst == str(target)
+            assert str(manager.cache_dir) in src
+
+        assert target.exists()
+        with open(target) as f:
+            written = json.load(f)
+        assert written == data
+
+    def test_write_json_no_partial_on_error(self, manager):
+        """If writing fails mid-stream, target file should not be corrupted."""
+        target = manager.cache_dir / "safe.json"
+        data_good = {"key": "good", "content": "safe"}
+        manager._write_json(target, data_good)
+
+        import unittest.mock as mock
+        def failing_fdopen(fd, *args, **kwargs):
+            os.close(fd)
+            raise OSError("disk full")
+
+        with mock.patch("core.memory_manager.os.fdopen", side_effect=failing_fdopen):
+            with pytest.raises(OSError, match="disk full"):
+                manager._write_json(target, {"key": "bad", "content": "corrupt"})
+
+        with open(target) as f:
+            assert json.load(f) == data_good
+
+    def test_write_json_uses_fdopen(self, manager):
+        """_write_json should use os.fdopen, not raw os.write."""
+        import unittest.mock as mock
+        target = manager.cache_dir / "fdopen_test.json"
+        data = {"key": "test", "content": "hello"}
+
+        with mock.patch("core.memory_manager.os.fdopen", wraps=os.fdopen) as mock_fdopen:
+            manager._write_json(target, data)
+            assert mock_fdopen.call_count == 1
+
+    def test_no_leftover_temp_files(self, manager):
+        """After successful write, no temp files should remain."""
+        target = manager.cache_dir / "clean.json"
+        manager._write_json(target, {"key": "test"})
+        tmp_files = list(manager.cache_dir.glob(".tmp_*"))
+        assert len(tmp_files) == 0
+
+
 class TestDeleteLegacyImmutabilityCheck:
     def test_delete_immutable_legacy_md5_blocked(self, manager):
         """Immutable memory at MD5 path should block delete without force."""

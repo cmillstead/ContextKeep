@@ -58,16 +58,27 @@ class MemoryManager:
         return None
 
     def _write_json(self, file_path: Path, data: Dict[str, Any]) -> None:
-        """Write JSON data to file with 0o600 permissions."""
+        """Write JSON data to file atomically with 0o600 permissions.
+
+        Writes to a temp file in the same directory, then atomically replaces
+        the target. Uses os.fdopen for proper file object handling.
+        """
+        import tempfile
         content = json.dumps(data, indent=2, ensure_ascii=False)
-        # Open with restricted permissions from the start
-        fd = os.open(str(file_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(file_path.parent), prefix=".tmp_", suffix=".json"
+        )
         try:
-            os.write(fd, content.encode("utf-8"))
-        finally:
-            os.close(fd)
-        # Ensure permissions are correct even if umask interfered
-        os.chmod(file_path, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+            os.chmod(tmp_path, 0o600)
+            os.replace(tmp_path, str(file_path))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def _apply_schema_defaults(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Add missing schema fields with safe defaults for legacy memories."""
