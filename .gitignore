@@ -12,6 +12,9 @@ data/
 logs/
 *.log
 
+# Encryption salt (per-installation secret)
+.contextkeep_salt
+
 # System
 .DS_Store
 Thumbs.db
