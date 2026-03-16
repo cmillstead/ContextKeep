@@ -8,9 +8,7 @@ from core.utils import now_timestamp
 
 # Configuration
 PROJECT_ROOT = Path(__file__).parent.parent
-CACHE_DIR = PROJECT_ROOT / "data" / "memories"
-CACHE_DIR.mkdir(parents=True, exist_ok=True)
-os.chmod(CACHE_DIR, 0o700)
+DEFAULT_CACHE_DIR = PROJECT_ROOT / "data" / "memories"
 
 # Schema defaults for legacy memories missing new fields
 _SCHEMA_DEFAULTS = {
@@ -24,8 +22,10 @@ _SCHEMA_DEFAULTS = {
 
 
 class MemoryManager:
-    def __init__(self):
-        self.cache_dir = CACHE_DIR
+    def __init__(self, cache_dir: Optional[Path] = None):
+        self.cache_dir = cache_dir or DEFAULT_CACHE_DIR
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.cache_dir, 0o700)
 
     def _get_file_path(self, key: str) -> Path:
         """Get the SHA-256 file path for a given memory key."""
