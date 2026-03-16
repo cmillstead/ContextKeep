@@ -22,6 +22,9 @@ from core.content_scanner import scan_all_fields
 from core.utils import RateLimiter as _RateLimiter, _parse_max_size, validate_key, validate_title, validate_tags, MAX_KEY_LENGTH
 
 app = Flask(__name__)
+# Secret key is generated per-process. On restart, all outstanding CSRF tokens
+# become invalid and users must refresh the page. This is expected behavior
+# for a localhost deployment. Persistent secret_key would require secure storage.
 app.secret_key = os.urandom(32)
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB
 

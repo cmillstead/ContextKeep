@@ -126,6 +126,11 @@ class MemoryManager:
             file_path = self._get_file_path(key)
             now = now_timestamp()
 
+            # Provenance is self-attested: the caller declares its source and identity.
+            # These fields are NOT cryptographically verified. The `source` and `created_by`
+            # fields are preserved from the original creator; `last_modified_by` tracks
+            # the most recent writer. Trust decisions based on provenance should account
+            # for this self-attestation model.
             memory_data = {
                 "key": key,
                 "title": title or key,

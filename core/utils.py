@@ -56,7 +56,13 @@ def now_timestamp() -> str:
 
 
 class RateLimiter:
-    """Thread-safe sliding-window rate limiter."""
+    """Thread-safe sliding-window rate limiter.
+
+    Note: This is a global (not per-IP) rate limiter. All clients share
+    the same counter. This is intentional for ContextKeep's single-user,
+    localhost deployment model. For multi-user deployments, switch to
+    per-client rate limiting.
+    """
 
     def __init__(self, max_calls: int = 20, window: float = 60):
         self.max_calls = max_calls
