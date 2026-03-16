@@ -474,3 +474,26 @@ class TestParseMaxSize:
             assert _parse_max_size() == 10 * 1024 * 1024
         finally:
             del os.environ["CONTEXTKEEP_MAX_SIZE"]
+
+
+class TestNoInlineEventHandlers:
+    def test_index_page_has_no_onclick(self, client):
+        """The main page should not contain any inline onclick handlers."""
+        resp = client.get("/")
+        html = resp.data.decode()
+        assert 'onclick=' not in html
+
+
+class TestStrictCSP:
+    def test_csp_has_explicit_script_src(self, client):
+        resp = client.get("/")
+        csp = resp.headers.get("Content-Security-Policy", "")
+        assert "script-src 'self'" in csp
+
+    def test_csp_no_unsafe_inline_scripts(self, client):
+        resp = client.get("/")
+        csp = resp.headers.get("Content-Security-Policy", "")
+        # Extract script-src directive
+        if "script-src" in csp:
+            script_part = csp.split("script-src")[1].split(";")[0]
+            assert "'unsafe-inline'" not in script_part

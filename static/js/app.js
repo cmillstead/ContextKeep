@@ -52,6 +52,22 @@ function setupEventListeners() {
     document.getElementById('saveNewBtn').addEventListener('click', saveNewMemory);
     document.getElementById('saveEditBtn').addEventListener('click', saveEdit);
     document.getElementById('confirmDeleteBtn').addEventListener('click', confirmDelete);
+
+    // Calendar navigation
+    document.getElementById('calPrevBtn').addEventListener('click', prevMonth);
+    document.getElementById('calNextBtn').addEventListener('click', nextMonth);
+
+    // Event delegation for card and calendar actions
+    document.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-action]');
+        if (!el) return;
+        const action = el.dataset.action;
+        const key = el.dataset.key;
+        if (!key) return;
+        if (action === 'view') viewMemory(key);
+        else if (action === 'edit') editMemory(key);
+        else if (action === 'delete') deleteMemory(key);
+    });
 }
 
 // ─── View Switching ───
@@ -130,9 +146,9 @@ function renderMemories(memoriesToRender) {
                 ${charBadge}
             </div>
             <div class="card-actions">
-                <button class="btn btn-primary" onclick="viewMemory('${encodeKey(mem.key)}')">View</button>
-                <button class="btn btn-secondary" onclick="editMemory('${encodeKey(mem.key)}')">Edit</button>
-                <button class="btn btn-danger" onclick="deleteMemory('${encodeKey(mem.key)}')">Delete</button>
+                <button class="btn btn-primary" data-action="view" data-key="${escapeHtml(mem.key)}">View</button>
+                <button class="btn btn-secondary" data-action="edit" data-key="${escapeHtml(mem.key)}">Edit</button>
+                <button class="btn btn-danger" data-action="delete" data-key="${escapeHtml(mem.key)}">Delete</button>
             </div>
         </div>`;
     }).join('');
@@ -200,7 +216,7 @@ function renderCalendar() {
 
         const memoriesHTML = dayMemories
             .slice(0, 4)
-            .map(m => `<div class="calendar-memory" onclick="viewMemory('${encodeKey(m.key)}')">${escapeHtml(m.title || m.key)}</div>`)
+            .map(m => `<div class="calendar-memory" data-action="view" data-key="${escapeHtml(m.key)}">${escapeHtml(m.title || m.key)}</div>`)
             .join('');
 
         html += `
@@ -353,7 +369,3 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// Encode memory key safely for use in onclick attributes
-function encodeKey(key) {
-    return escapeHtml(key).replace(/'/g, '&#39;');
-}

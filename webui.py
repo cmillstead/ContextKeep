@@ -63,7 +63,8 @@ def add_security_headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; font-src 'self'; style-src 'self' 'unsafe-inline'"
+        "default-src 'self'; script-src 'self'; font-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'"
     )
     return response
 
