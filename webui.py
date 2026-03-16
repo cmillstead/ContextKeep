@@ -9,6 +9,7 @@ from pathlib import Path
 import json
 import logging
 import os
+import re as _re
 import secrets
 import sys
 
@@ -16,6 +17,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent))
 from core.memory_manager import memory_manager
 from core.content_scanner import scan_all_fields
+from core.utils import RateLimiter as _RateLimiter, _parse_max_size
 
 app = Flask(__name__)
 app.secret_key = os.urandom(32)
@@ -25,6 +27,32 @@ app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB
 _csrf_token = secrets.token_hex(32)
 
 logger = logging.getLogger(__name__)
+
+# ─── Validation constants ───
+MAX_CONTENT_SIZE = _parse_max_size()
+MAX_KEY_LENGTH = 256
+MAX_TAGS = 20
+MAX_TAG_LENGTH = 50
+_TAG_PATTERN = _re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9 _-]*$')
+
+ALLOWED_ACTIONS = {"Manual Edit", "Manual Edit via WebUI", "Content Update", "Title Update", "Tag Update"}
+
+_write_limiter = _RateLimiter(max_calls=20, window=60)
+
+
+def _validate_tags(tags):
+    if not isinstance(tags, list):
+        return "Tags must be a list"
+    if len(tags) > MAX_TAGS:
+        return "Too many tags (max %d)" % MAX_TAGS
+    for tag in tags:
+        if not isinstance(tag, str):
+            return "Each tag must be a string"
+        if len(tag) > MAX_TAG_LENGTH:
+            return "Tag too long (max %d chars)" % MAX_TAG_LENGTH
+        if tag and not _TAG_PATTERN.match(tag):
+            return "Tag contains invalid characters"
+    return None
 
 
 # ─── Security Middleware ───
@@ -90,6 +118,9 @@ def get_memory(key):
 def create_memory():
     """Create a new memory"""
     try:
+        if not _write_limiter.allow():
+            return jsonify({"success": False, "error": "Rate limit exceeded. Try again later."}), 429
+
         data = request.get_json(silent=True)
         if not data:
             return jsonify({"success": False, "error": "Request body is required"}), 400
@@ -101,6 +132,16 @@ def create_memory():
 
         if not key:
             return jsonify({"success": False, "error": "Key is required"}), 400
+
+        if len(key) > MAX_KEY_LENGTH:
+            return jsonify({"success": False, "error": "Key too long (max %d chars)" % MAX_KEY_LENGTH}), 400
+
+        if len(content.encode("utf-8")) > MAX_CONTENT_SIZE:
+            return jsonify({"success": False, "error": "Content too large (max %d bytes)" % MAX_CONTENT_SIZE}), 413
+
+        tag_error = _validate_tags(tags)
+        if tag_error:
+            return jsonify({"success": False, "error": tag_error}), 400
 
         scan = scan_all_fields(key=key, title=title, tags=tags, content=content)
 
@@ -121,6 +162,9 @@ def create_memory():
 def update_memory(key):
     """Update a memory (including title)"""
     try:
+        if not _write_limiter.allow():
+            return jsonify({"success": False, "error": "Rate limit exceeded. Try again later."}), 429
+
         data = request.get_json(silent=True)
         if not data:
             return jsonify({"success": False, "error": "Request body is required"}), 400
@@ -129,6 +173,16 @@ def update_memory(key):
         title = data.get("title", "")
         tags = data.get("tags", [])
         action = data.get("action", "Manual Edit")
+
+        if action not in ALLOWED_ACTIONS:
+            return jsonify({"success": False, "error": "Invalid action value"}), 400
+
+        if len(content.encode("utf-8")) > MAX_CONTENT_SIZE:
+            return jsonify({"success": False, "error": "Content too large (max %d bytes)" % MAX_CONTENT_SIZE}), 413
+
+        tag_error = _validate_tags(tags)
+        if tag_error:
+            return jsonify({"success": False, "error": tag_error}), 400
 
         # Check immutability — allow only immutability toggle, block content changes
         existing = memory_manager.retrieve_memory(key)
