@@ -1,6 +1,7 @@
 import json
 import os
 import hashlib
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from core.encryption import encrypt, decrypt, is_encryption_enabled
@@ -26,6 +27,15 @@ class MemoryManager:
         self.cache_dir = cache_dir or DEFAULT_CACHE_DIR
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.cache_dir, 0o700)
+        self._locks: Dict[str, threading.Lock] = {}
+        self._locks_lock = threading.Lock()
+
+    def _get_key_lock(self, key: str) -> threading.Lock:
+        """Return a per-key lock, creating one if needed."""
+        with self._locks_lock:
+            if key not in self._locks:
+                self._locks[key] = threading.Lock()
+            return self._locks[key]
 
     def _get_file_path(self, key: str) -> Path:
         """Get the SHA-256 file path for a given memory key."""
@@ -107,61 +117,62 @@ class MemoryManager:
 
         Raises ValueError if the memory is immutable and force=False.
         """
-        file_path = self._get_file_path(key)
-        now = now_timestamp()
+        with self._get_key_lock(key):
+            file_path = self._get_file_path(key)
+            now = now_timestamp()
 
-        memory_data = {
-            "key": key,
-            "title": title or key,
-            "content": content,
-            "tags": tags or [],
-            "created_at": now,
-            "updated_at": now,
-            "lines": len(content.splitlines()),
-            "chars": len(content),
-            "source": source,
-            "created_by": created_by,
-            "immutable": False,
-            "suspicious": suspicious,
-            "matched_patterns": matched_patterns or [],
-            "encrypted": False,
-        }
+            memory_data = {
+                "key": key,
+                "title": title or key,
+                "content": content,
+                "tags": tags or [],
+                "created_at": now,
+                "updated_at": now,
+                "lines": len(content.splitlines()),
+                "chars": len(content),
+                "source": source,
+                "created_by": created_by,
+                "immutable": False,
+                "suspicious": suspicious,
+                "matched_patterns": matched_patterns or [],
+                "encrypted": False,
+            }
 
-        # Append audit entry if provided
-        if audit_entry:
-            content = f"{content}\n\n---\n**{now} | {audit_entry}**"
-            memory_data["content"] = content
-            memory_data["chars"] = len(content)
-            memory_data["lines"] = len(content.splitlines())
+            # Append audit entry if provided
+            if audit_entry:
+                content = f"{content}\n\n---\n**{now} | {audit_entry}**"
+                memory_data["content"] = content
+                memory_data["chars"] = len(content)
+                memory_data["lines"] = len(content.splitlines())
 
-        # If updating, preserve fields AND check immutability (COMBINED)
-        existing_path = self._migrate_if_needed(key)
-        if existing_path and existing_path.exists():
-            try:
-                with open(existing_path, "r", encoding="utf-8") as f:
-                    existing = json.load(f)
-                # Defense-in-depth: check immutability at the core layer
-                if not force and existing.get("immutable"):
-                    raise ValueError(
-                        f"Memory '{key}' is immutable. Use force=True to override."
-                    )
-                memory_data["created_at"] = existing.get("created_at", now)
-                if not title:
-                    memory_data["title"] = existing.get("title", key)
-                # Preserve provenance from original write
-                memory_data["source"] = existing.get("source", source)
-                memory_data["created_by"] = existing.get("created_by", created_by)
-                memory_data["immutable"] = existing.get("immutable", False)
-            except (json.JSONDecodeError, OSError):
-                pass  # Overwrite if corrupt
+            # If updating, preserve fields AND check immutability (COMBINED)
+            existing_path = self._migrate_if_needed(key)
+            if existing_path and existing_path.exists():
+                try:
+                    with open(existing_path, "r", encoding="utf-8") as f:
+                        existing = json.load(f)
+                    # Defense-in-depth: check immutability at the core layer
+                    if not force and existing.get("immutable"):
+                        raise ValueError(
+                            f"Memory '{key}' is immutable. Use force=True to override."
+                        )
+                    memory_data["created_at"] = existing.get("created_at", now)
+                    if not title:
+                        memory_data["title"] = existing.get("title", key)
+                    # Preserve provenance from original write
+                    memory_data["source"] = existing.get("source", source)
+                    memory_data["created_by"] = existing.get("created_by", created_by)
+                    memory_data["immutable"] = existing.get("immutable", False)
+                except (json.JSONDecodeError, OSError):
+                    pass  # Overwrite if corrupt
 
-        # Encrypt content if encryption is enabled
-        if is_encryption_enabled():
-            memory_data["content"] = encrypt(content)
-            memory_data["encrypted"] = True
+            # Encrypt content if encryption is enabled
+            if is_encryption_enabled():
+                memory_data["content"] = encrypt(content)
+                memory_data["encrypted"] = True
 
-        self._write_json(file_path, memory_data)
-        return memory_data
+            self._write_json(file_path, memory_data)
+            return memory_data
 
     def retrieve_memory(self, key: str) -> Optional[Dict[str, Any]]:
         """Retrieve a memory by key."""
@@ -250,48 +261,50 @@ class MemoryManager:
 
         Raises ValueError if the memory is immutable and force=False.
         """
-        # Defense-in-depth: check immutability at the core layer
-        if not force:
-            check_path = self._migrate_if_needed(key)
-            if check_path is None:
-                check_path = self._get_file_path(key)
-            if check_path.exists():
-                try:
-                    with open(check_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    if data.get("immutable"):
-                        raise ValueError(
-                            f"Memory '{key}' is immutable. Use force=True to override."
-                        )
-                except (json.JSONDecodeError, OSError):
-                    pass
-        file_path = self._get_file_path(key)
-        if file_path.exists():
-            file_path.unlink()
-            return True
-        # Check legacy MD5 path
-        legacy_path = self._get_legacy_file_path(key)
-        if legacy_path.exists():
-            legacy_path.unlink()
-            return True
-        return False
+        with self._get_key_lock(key):
+            # Defense-in-depth: check immutability at the core layer
+            if not force:
+                check_path = self._migrate_if_needed(key)
+                if check_path is None:
+                    check_path = self._get_file_path(key)
+                if check_path.exists():
+                    try:
+                        with open(check_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        if data.get("immutable"):
+                            raise ValueError(
+                                f"Memory '{key}' is immutable. Use force=True to override."
+                            )
+                    except (json.JSONDecodeError, OSError):
+                        pass
+            file_path = self._get_file_path(key)
+            if file_path.exists():
+                file_path.unlink()
+                return True
+            # Check legacy MD5 path
+            legacy_path = self._get_legacy_file_path(key)
+            if legacy_path.exists():
+                legacy_path.unlink()
+                return True
+            return False
 
     def set_immutable(self, key: str, value: bool = True) -> Optional[Dict]:
         """Set the immutable flag on a memory. Returns updated data or None if not found."""
-        file_path = self._migrate_if_needed(key)
-        if file_path is None:
-            file_path = self._get_file_path(key)
-        if not file_path.exists():
-            return None
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return None
-        data = self._apply_schema_defaults(data)
-        data["immutable"] = bool(value)
-        self._write_json(file_path, data)
-        return data
+        with self._get_key_lock(key):
+            file_path = self._migrate_if_needed(key)
+            if file_path is None:
+                file_path = self._get_file_path(key)
+            if not file_path.exists():
+                return None
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                return None
+            data = self._apply_schema_defaults(data)
+            data["immutable"] = bool(value)
+            self._write_json(file_path, data)
+            return data
 
     def get_stats(self) -> Dict[str, Any]:
         """Get memory statistics."""

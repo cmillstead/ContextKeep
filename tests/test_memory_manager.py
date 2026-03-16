@@ -2,6 +2,7 @@ import json
 import os
 import stat
 import hashlib
+import threading
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -304,3 +305,49 @@ class TestDeleteLegacyImmutabilityCheck:
         (manager.cache_dir / f"{md5_hash}.json").write_text(json.dumps(data))
         with pytest.raises(ValueError, match="immutable"):
             manager.delete_memory(key)
+
+
+class TestPerKeyLocking:
+    def test_concurrent_writes_serialized(self, manager):
+        """Two threads writing the same key should not corrupt data."""
+        errors = []
+        def writer(content):
+            try:
+                manager.store_memory("race-key", content, source="test", created_by="test")
+            except Exception as e:
+                errors.append(e)
+
+        t1 = threading.Thread(target=writer, args=("content-A",))
+        t2 = threading.Thread(target=writer, args=("content-B",))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert not errors, f"Unexpected errors: {errors}"
+        mem = manager.retrieve_memory("race-key")
+        assert mem is not None
+        # Content should be valid (one of the two), not corrupted
+        assert "content-" in mem["content"]
+
+    def test_different_keys_not_blocked(self, manager):
+        """Writes to different keys should not block each other."""
+        results = {}
+        def writer(key, content):
+            manager.store_memory(key, content, source="test", created_by="test")
+            results[key] = True
+
+        t1 = threading.Thread(target=writer, args=("key-1", "content-1"))
+        t2 = threading.Thread(target=writer, args=("key-2", "content-2"))
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        assert results.get("key-1") is True
+        assert results.get("key-2") is True
+
+    def test_lock_dict_exists(self, manager):
+        """MemoryManager should have a _locks dict attribute."""
+        assert hasattr(manager, "_locks")
+        assert isinstance(manager._locks, dict)
