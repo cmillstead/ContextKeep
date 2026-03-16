@@ -11,11 +11,10 @@ import os
 import hashlib
 import logging
 import argparse
-import threading
-import time
 from fastmcp import FastMCP
 from core.memory_manager import memory_manager
-from core.content_scanner import scan_content
+from core.content_scanner import scan_all_fields
+from core.utils import RateLimiter as _RateLimiter, _parse_max_size
 
 logger = logging.getLogger("contextkeep")
 
@@ -25,39 +24,11 @@ mcp = FastMCP("context-keep")
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-MAX_CONTENT_SIZE = int(os.environ.get("CONTEXTKEEP_MAX_SIZE", 100 * 1024))  # 100 KB
+MAX_CONTENT_SIZE = _parse_max_size()
 RATE_LIMIT_WRITES = 20   # per minute
 RATE_LIMIT_WINDOW = 60   # seconds
 
-
-# ---------------------------------------------------------------------------
-# Rate limiter (thread-safe sliding window)
-# ---------------------------------------------------------------------------
-# threading.Lock is used here because FastMCP may run tool handlers in a
-# thread-pool, so a single Lock protects the shared timestamps list.
-class _RateLimiter:
-    """Thread-safe sliding-window rate limiter."""
-
-    def __init__(self, max_calls: int = RATE_LIMIT_WRITES, window: float = RATE_LIMIT_WINDOW):
-        self.max_calls = max_calls
-        self.window = window
-        self._timestamps: list[float] = []
-        self._lock = threading.Lock()
-
-    def allow(self) -> bool:
-        """Return True if the call is within the rate limit, and record it."""
-        now = time.monotonic()
-        with self._lock:
-            # Evict expired entries
-            cutoff = now - self.window
-            self._timestamps = [t for t in self._timestamps if t > cutoff]
-            if len(self._timestamps) >= self.max_calls:
-                return False
-            self._timestamps.append(now)
-            return True
-
-
-_write_limiter = _RateLimiter()
+_write_limiter = _RateLimiter(max_calls=RATE_LIMIT_WRITES, window=RATE_LIMIT_WINDOW)
 
 
 # ---------------------------------------------------------------------------
@@ -108,10 +79,12 @@ async def store_memory(key: str, content: str, tags: str = "", title: str = "") 
         return "Memory '%s' is immutable (LOCKED). Cannot overwrite via MCP." % key
 
     # --- Content scanning ---
-    scan = scan_content(content)
+    tag_list = [t.strip() for t in tags.split(",")] if tags else []
+    scan = scan_all_fields(key=key, title=title, tags=tag_list, content=content)
+    if scan["suspicious"]:
+        logger.warning("Suspicious content detected in key='%s': patterns=%s", key, scan["matched_patterns"])
 
     try:
-        tag_list = [t.strip() for t in tags.split(",")] if tags else []
 
         audit = "AI Update via MCP" if existing else "Created via MCP"
 

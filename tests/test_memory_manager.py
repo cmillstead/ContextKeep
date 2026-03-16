@@ -2,6 +2,7 @@ import json
 import os
 import stat
 import hashlib
+import threading
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -236,6 +237,63 @@ class TestStoreMemorySingleRead:
         assert call_count == 1
 
 
+class TestAtomicWrite:
+    def test_write_json_is_atomic(self, manager, tmp_path):
+        """_write_json should write to a temp file then os.replace to target."""
+        import unittest.mock as mock
+        target = manager.cache_dir / "atomic_test.json"
+        data = {"key": "test", "content": "hello"}
+
+        with mock.patch("core.memory_manager.os.replace", wraps=os.replace) as mock_replace:
+            manager._write_json(target, data)
+            assert mock_replace.call_count == 1
+            call_args = mock_replace.call_args
+            src = call_args[0][0]
+            dst = call_args[0][1]
+            assert dst == str(target)
+            assert str(manager.cache_dir) in src
+
+        assert target.exists()
+        with open(target) as f:
+            written = json.load(f)
+        assert written == data
+
+    def test_write_json_no_partial_on_error(self, manager):
+        """If writing fails mid-stream, target file should not be corrupted."""
+        target = manager.cache_dir / "safe.json"
+        data_good = {"key": "good", "content": "safe"}
+        manager._write_json(target, data_good)
+
+        import unittest.mock as mock
+        def failing_fdopen(fd, *args, **kwargs):
+            os.close(fd)
+            raise OSError("disk full")
+
+        with mock.patch("core.memory_manager.os.fdopen", side_effect=failing_fdopen):
+            with pytest.raises(OSError, match="disk full"):
+                manager._write_json(target, {"key": "bad", "content": "corrupt"})
+
+        with open(target) as f:
+            assert json.load(f) == data_good
+
+    def test_write_json_uses_fdopen(self, manager):
+        """_write_json should use os.fdopen, not raw os.write."""
+        import unittest.mock as mock
+        target = manager.cache_dir / "fdopen_test.json"
+        data = {"key": "test", "content": "hello"}
+
+        with mock.patch("core.memory_manager.os.fdopen", wraps=os.fdopen) as mock_fdopen:
+            manager._write_json(target, data)
+            assert mock_fdopen.call_count == 1
+
+    def test_no_leftover_temp_files(self, manager):
+        """After successful write, no temp files should remain."""
+        target = manager.cache_dir / "clean.json"
+        manager._write_json(target, {"key": "test"})
+        tmp_files = list(manager.cache_dir.glob(".tmp_*"))
+        assert len(tmp_files) == 0
+
+
 class TestDeleteLegacyImmutabilityCheck:
     def test_delete_immutable_legacy_md5_blocked(self, manager):
         """Immutable memory at MD5 path should block delete without force."""
@@ -247,3 +305,107 @@ class TestDeleteLegacyImmutabilityCheck:
         (manager.cache_dir / f"{md5_hash}.json").write_text(json.dumps(data))
         with pytest.raises(ValueError, match="immutable"):
             manager.delete_memory(key)
+
+
+class TestDecryptionGracefulDegradation:
+    def test_retrieve_returns_placeholder_on_decryption_error(self, manager):
+        """If decryption fails, retrieve_memory returns memory with error placeholder."""
+        import core.encryption as enc_module
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-1"}):
+            manager.store_memory("enc-fail", "secret data", source="test", created_by="test")
+        enc_module._fernet_cache.clear()
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-2"}):
+            result = manager.retrieve_memory("enc-fail")
+        assert result is not None
+        assert "[DECRYPTION FAILED]" in result["content"]
+
+    def test_list_memories_includes_failed_decryption(self, manager):
+        """list_memories should include memories that fail decryption, with placeholder."""
+        import core.encryption as enc_module
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-1"}):
+            manager.store_memory("enc-list-fail", "secret", source="test", created_by="test")
+        enc_module._fernet_cache.clear()
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-2"}):
+            memories = manager.list_memories()
+        assert len(memories) == 1
+        assert "[DECRYPTION FAILED]" in memories[0]["content"]
+
+    def test_search_memories_handles_decryption_error(self, manager):
+        """search_memories should not crash on decryption errors."""
+        import core.encryption as enc_module
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-1"}):
+            manager.store_memory("search-fail", "secret findable", source="test", created_by="test")
+        enc_module._fernet_cache.clear()
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "key-2"}):
+            results = manager.search_memories("findable")
+            assert isinstance(results, list)
+
+
+class TestLastModifiedBy:
+    def test_last_modified_by_set_on_create(self, manager):
+        manager.store_memory("mod-test", "content", source="mcp", created_by="mcp-tool")
+        mem = manager.retrieve_memory("mod-test")
+        assert mem["last_modified_by"] == "mcp-tool"
+
+    def test_last_modified_by_updated_on_update(self, manager):
+        manager.store_memory("mod-test2", "v1", source="mcp", created_by="mcp-tool")
+        manager.store_memory("mod-test2", "v2", source="human", created_by="webui")
+        mem = manager.retrieve_memory("mod-test2")
+        assert mem["created_by"] == "mcp-tool"  # preserved from original
+        assert mem["last_modified_by"] == "webui"  # from latest write
+
+    def test_legacy_memory_gets_default(self, manager):
+        import hashlib
+        sha = hashlib.sha256("legacy-mod".encode()).hexdigest()
+        old_data = {"key": "legacy-mod", "content": "old", "title": "legacy",
+                    "tags": [], "created_at": "2025-01-01", "updated_at": "2025-01-01",
+                    "lines": 1, "chars": 3}
+        (manager.cache_dir / f"{sha}.json").write_text(json.dumps(old_data))
+        mem = manager.retrieve_memory("legacy-mod")
+        assert mem["last_modified_by"] == "unknown"
+
+
+class TestPerKeyLocking:
+    def test_concurrent_writes_serialized(self, manager):
+        """Two threads writing the same key should not corrupt data."""
+        errors = []
+        def writer(content):
+            try:
+                manager.store_memory("race-key", content, source="test", created_by="test")
+            except Exception as e:
+                errors.append(e)
+
+        t1 = threading.Thread(target=writer, args=("content-A",))
+        t2 = threading.Thread(target=writer, args=("content-B",))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert not errors, f"Unexpected errors: {errors}"
+        mem = manager.retrieve_memory("race-key")
+        assert mem is not None
+        # Content should be valid (one of the two), not corrupted
+        assert "content-" in mem["content"]
+
+    def test_different_keys_not_blocked(self, manager):
+        """Writes to different keys should not block each other."""
+        results = {}
+        def writer(key, content):
+            manager.store_memory(key, content, source="test", created_by="test")
+            results[key] = True
+
+        t1 = threading.Thread(target=writer, args=("key-1", "content-1"))
+        t2 = threading.Thread(target=writer, args=("key-2", "content-2"))
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        assert results.get("key-1") is True
+        assert results.get("key-2") is True
+
+    def test_lock_dict_exists(self, manager):
+        """MemoryManager should have a _locks dict attribute."""
+        assert hasattr(manager, "_locks")
+        assert isinstance(manager._locks, dict)
