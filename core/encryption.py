@@ -34,14 +34,46 @@ def _get_salt_path() -> pathlib.Path:
 
 
 def _load_or_create_salt() -> bytes:
-    """Load the random salt from disk, or create & persist a new one."""
+    """Load the random salt from disk, or create & persist a new one.
+
+    Uses O_EXCL for race-free creation and sets 0o600 permissions.
+    """
     salt_path = _get_salt_path()
     if salt_path.exists():
         return salt_path.read_bytes()
     salt = os.urandom(16)
     salt_path.parent.mkdir(parents=True, exist_ok=True)
-    salt_path.write_bytes(salt)
+    try:
+        fd = os.open(str(salt_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.write(fd, salt)
+        finally:
+            os.close(fd)
+    except FileExistsError:
+        # Race condition: another process created it first
+        return salt_path.read_bytes()
     return salt
+
+
+def check_salt_permissions() -> bool:
+    """Check that the salt file has safe permissions (0o600).
+
+    Returns True if the file doesn't exist or has correct permissions.
+    Returns False and logs a warning if permissions are too open.
+    """
+    import logging
+    import stat
+    salt_path = _get_salt_path()
+    if not salt_path.exists():
+        return True
+    mode = stat.S_IMODE(os.stat(salt_path).st_mode)
+    if mode != 0o600:
+        logging.getLogger("contextkeep.encryption").warning(
+            "Salt file %s has permissions %o (expected 0600). Run: chmod 600 %s",
+            salt_path, mode, salt_path,
+        )
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
