@@ -1,7 +1,30 @@
 /* ContextKeep V1.2 — "Obsidian Lab" Design System */
 /* Skills applied: frontend-design (DFII 14/15 — Excellent) */
 
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+/* ─── Self-hosted Fonts ─── */
+@font-face {
+    font-family: 'Space Grotesk';
+    src: url('../fonts/SpaceGrotesk-Variable.woff2') format('woff2');
+    font-weight: 300 700;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'JetBrains Mono';
+    src: url('../fonts/JetBrainsMono-Regular.woff2') format('woff2');
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'JetBrains Mono';
+    src: url('../fonts/JetBrainsMono-Medium.woff2') format('woff2');
+    font-weight: 500;
+    font-style: normal;
+    font-display: swap;
+}
 
 /* ─── Design Tokens ─── */
 :root {
