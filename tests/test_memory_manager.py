@@ -341,6 +341,30 @@ class TestDecryptionGracefulDegradation:
             assert isinstance(results, list)
 
 
+class TestLastModifiedBy:
+    def test_last_modified_by_set_on_create(self, manager):
+        manager.store_memory("mod-test", "content", source="mcp", created_by="mcp-tool")
+        mem = manager.retrieve_memory("mod-test")
+        assert mem["last_modified_by"] == "mcp-tool"
+
+    def test_last_modified_by_updated_on_update(self, manager):
+        manager.store_memory("mod-test2", "v1", source="mcp", created_by="mcp-tool")
+        manager.store_memory("mod-test2", "v2", source="human", created_by="webui")
+        mem = manager.retrieve_memory("mod-test2")
+        assert mem["created_by"] == "mcp-tool"  # preserved from original
+        assert mem["last_modified_by"] == "webui"  # from latest write
+
+    def test_legacy_memory_gets_default(self, manager):
+        import hashlib
+        sha = hashlib.sha256("legacy-mod".encode()).hexdigest()
+        old_data = {"key": "legacy-mod", "content": "old", "title": "legacy",
+                    "tags": [], "created_at": "2025-01-01", "updated_at": "2025-01-01",
+                    "lines": 1, "chars": 3}
+        (manager.cache_dir / f"{sha}.json").write_text(json.dumps(old_data))
+        mem = manager.retrieve_memory("legacy-mod")
+        assert mem["last_modified_by"] == "unknown"
+
+
 class TestPerKeyLocking:
     def test_concurrent_writes_serialized(self, manager):
         """Two threads writing the same key should not corrupt data."""

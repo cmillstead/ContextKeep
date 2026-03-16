@@ -11,6 +11,11 @@ Restart=always
 RestartSec=10
 StandardOutput=append:{{WORKDIR}}/logs/contextkeep_webui.log
 StandardError=append:{{WORKDIR}}/logs/contextkeep_webui_error.log
+ProtectSystem=strict
+ProtectHome=read-only
+NoNewPrivileges=true
+PrivateTmp=true
+ReadWritePaths={{WORKDIR}}/data {{WORKDIR}}/logs
 
 [Install]
 WantedBy=multi-user.target

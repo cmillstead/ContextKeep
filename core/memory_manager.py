@@ -15,6 +15,7 @@ DEFAULT_CACHE_DIR = PROJECT_ROOT / "data" / "memories"
 _SCHEMA_DEFAULTS = {
     "source": "unknown",
     "created_by": "unknown",
+    "last_modified_by": "unknown",
     "immutable": False,
     "suspicious": False,
     "matched_patterns": [],
@@ -132,6 +133,7 @@ class MemoryManager:
                 "chars": len(content),
                 "source": source,
                 "created_by": created_by,
+                "last_modified_by": created_by,
                 "immutable": False,
                 "suspicious": suspicious,
                 "matched_patterns": matched_patterns or [],

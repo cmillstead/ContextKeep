@@ -81,6 +81,8 @@ async def store_memory(key: str, content: str, tags: str = "", title: str = "") 
     # --- Content scanning ---
     tag_list = [t.strip() for t in tags.split(",")] if tags else []
     scan = scan_all_fields(key=key, title=title, tags=tag_list, content=content)
+    if scan["suspicious"]:
+        logger.warning("Suspicious content detected in key='%s': patterns=%s", key, scan["matched_patterns"])
 
     try:
 
