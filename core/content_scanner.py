@@ -21,6 +21,28 @@ INJECTION_PATTERNS: List[Tuple[str, str]] = [
 
 _COMPILED_PATTERNS = [(re.compile(pattern, re.IGNORECASE), name) for pattern, name in INJECTION_PATTERNS]
 
+# Zero-width and invisible characters to strip
+_INVISIBLE_CHARS = re.compile(
+    "[\u200b\u200c\u200d\u200e\u200f\ufeff\u00ad\u2060\u2061\u2062\u2063\u2064\u180e]"
+)
+
+# Common homoglyph mappings (Cyrillic/Greek → ASCII)
+_HOMOGLYPHS: Dict[str, str] = {
+    "\u0430": "a", "\u0435": "e", "\u043e": "o", "\u0440": "p",
+    "\u0441": "c", "\u0443": "y", "\u0445": "x", "\u0456": "i",
+    "\u0458": "j", "\u04bb": "h",
+    "\u0391": "A", "\u0392": "B", "\u0395": "E", "\u0396": "Z",
+    "\u0397": "H", "\u0399": "I", "\u039a": "K", "\u039c": "M",
+    "\u039d": "N", "\u039f": "O", "\u03a1": "P", "\u03a4": "T",
+    "\u03a5": "Y", "\u03a7": "X",
+}
+
+
+def _normalize_for_scan(text: str) -> str:
+    """Normalize text for scanning: strip invisible chars, map homoglyphs."""
+    text = _INVISIBLE_CHARS.sub("", text)
+    return "".join(_HOMOGLYPHS.get(ch, ch) for ch in text)
+
 
 def scan_content(text: str) -> Dict[str, object]:
     """Scan text for prompt injection patterns.
@@ -28,11 +50,20 @@ def scan_content(text: str) -> Dict[str, object]:
     Returns {"suspicious": bool, "matched_patterns": [str]}
     Called on the write path only. Non-blocking: content is still stored, just flagged.
     """
+    normalized = _normalize_for_scan(text)
     matched = []
     for compiled_re, name in _COMPILED_PATTERNS:
-        if compiled_re.search(text):
+        if compiled_re.search(normalized):
             matched.append(name)
     return {
         "suspicious": len(matched) > 0,
         "matched_patterns": matched,
     }
+
+
+def scan_all_fields(key: str = "", title: str = "", tags: List[str] = None, content: str = "") -> Dict[str, object]:
+    """Scan all memory fields for injection patterns."""
+    if tags is None:
+        tags = []
+    combined = "\n".join([key, title, " ".join(str(t) for t in tags), content])
+    return scan_content(combined)

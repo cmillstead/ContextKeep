@@ -15,7 +15,7 @@ import sys
 # Add parent directory to path to import memory_manager
 sys.path.insert(0, str(Path(__file__).parent))
 from core.memory_manager import memory_manager
-from core.content_scanner import scan_content
+from core.content_scanner import scan_all_fields
 
 app = Flask(__name__)
 app.secret_key = os.urandom(32)
@@ -102,7 +102,7 @@ def create_memory():
         if not key:
             return jsonify({"success": False, "error": "Key is required"}), 400
 
-        scan = scan_content(content)
+        scan = scan_all_fields(key=key, title=title, tags=tags, content=content)
 
         result = memory_manager.store_memory(
             key, content, tags, title,
@@ -141,7 +141,7 @@ def update_memory(key):
             result = memory_manager.retrieve_memory(key)
             return jsonify({"success": True, "memory": result})
 
-        scan = scan_content(content)
+        scan = scan_all_fields(key=key, title=title, tags=tags, content=content)
 
         result = memory_manager.store_memory(
             key, content, tags, title,

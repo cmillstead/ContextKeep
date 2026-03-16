@@ -15,7 +15,7 @@ import threading
 import time
 from fastmcp import FastMCP
 from core.memory_manager import memory_manager
-from core.content_scanner import scan_content
+from core.content_scanner import scan_all_fields
 
 logger = logging.getLogger("contextkeep")
 
@@ -108,10 +108,10 @@ async def store_memory(key: str, content: str, tags: str = "", title: str = "") 
         return "Memory '%s' is immutable (LOCKED). Cannot overwrite via MCP." % key
 
     # --- Content scanning ---
-    scan = scan_content(content)
+    tag_list = [t.strip() for t in tags.split(",")] if tags else []
+    scan = scan_all_fields(key=key, title=title, tags=tag_list, content=content)
 
     try:
-        tag_list = [t.strip() for t in tags.split(",")] if tags else []
 
         audit = "AI Update via MCP" if existing else "Created via MCP"
 
