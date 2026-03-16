@@ -3,8 +3,6 @@ import os
 import hashlib
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from datetime import datetime
-
 from core.encryption import encrypt, decrypt, is_encryption_enabled
 from core.utils import now_timestamp
 
@@ -101,20 +99,6 @@ class MemoryManager:
         file_path = self._get_file_path(key)
         now = now_timestamp()
 
-        # Defense-in-depth: check immutability at the core layer
-        if not force:
-            check_path = self._migrate_if_needed(key)
-            if check_path and check_path.exists():
-                try:
-                    with open(check_path, "r", encoding="utf-8") as f:
-                        check_data = json.load(f)
-                    if check_data.get("immutable"):
-                        raise ValueError(
-                            f"Memory '{key}' is immutable. Use force=True to override."
-                        )
-                except (json.JSONDecodeError, OSError):
-                    pass
-
         memory_data = {
             "key": key,
             "title": title or key,
@@ -134,18 +118,22 @@ class MemoryManager:
 
         # Append audit entry if provided
         if audit_entry:
-            timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-            content = f"{content}\n\n---\n**{timestamp} | {audit_entry}**"
+            content = f"{content}\n\n---\n**{now} | {audit_entry}**"
             memory_data["content"] = content
             memory_data["chars"] = len(content)
             memory_data["lines"] = len(content.splitlines())
 
-        # If updating, preserve created_at, title, source, created_by, immutable
+        # If updating, preserve fields AND check immutability (COMBINED)
         existing_path = self._migrate_if_needed(key)
         if existing_path and existing_path.exists():
             try:
                 with open(existing_path, "r", encoding="utf-8") as f:
                     existing = json.load(f)
+                # Defense-in-depth: check immutability at the core layer
+                if not force and existing.get("immutable"):
+                    raise ValueError(
+                        f"Memory '{key}' is immutable. Use force=True to override."
+                    )
                 memory_data["created_at"] = existing.get("created_at", now)
                 if not title:
                     memory_data["title"] = existing.get("title", key)
@@ -231,7 +219,9 @@ class MemoryManager:
         """
         # Defense-in-depth: check immutability at the core layer
         if not force:
-            check_path = self._get_file_path(key)
+            check_path = self._migrate_if_needed(key)
+            if check_path is None:
+                check_path = self._get_file_path(key)
             if check_path.exists():
                 try:
                     with open(check_path, "r", encoding="utf-8") as f:

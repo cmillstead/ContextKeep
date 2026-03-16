@@ -41,6 +41,7 @@ def encrypt_existing():
                 mem["key"], mem["content"], mem.get("tags", []), mem.get("title"),
                 source=mem.get("source", "unknown"),
                 created_by=mem.get("created_by", "unknown"),
+                force=True,
             )
             count += 1
     print(f"Encrypted {count} memories.")
@@ -53,19 +54,21 @@ def decrypt_existing():
         sys.exit(1)
     import os
     memories = memory_manager.list_memories()
+    # Pop secret ONCE before the loop — store_memory without encryption
+    secret = os.environ.pop("CONTEXTKEEP_SECRET")
     count = 0
-    for mem in memories:
-        if mem.get("encrypted"):
-            secret = os.environ.pop("CONTEXTKEEP_SECRET")
-            try:
+    try:
+        for mem in memories:
+            if mem.get("encrypted"):
                 memory_manager.store_memory(
                     mem["key"], mem["content"], mem.get("tags", []), mem.get("title"),
                     source=mem.get("source", "unknown"),
                     created_by=mem.get("created_by", "unknown"),
+                    force=True,
                 )
                 count += 1
-            finally:
-                os.environ["CONTEXTKEEP_SECRET"] = secret
+    finally:
+        os.environ["CONTEXTKEEP_SECRET"] = secret
     print(f"Decrypted {count} memories.")
 
 
