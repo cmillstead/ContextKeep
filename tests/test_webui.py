@@ -484,6 +484,33 @@ class TestNoInlineEventHandlers:
         assert 'onclick=' not in html
 
 
+class TestCSRFRotation:
+    def test_csrf_token_contains_timestamp(self, client):
+        """CSRF token should include a dot separator (timestamp.signature)."""
+        token = _get_csrf_token(client)
+        assert "." in token
+
+    def test_csrf_token_valid_within_window(self, client):
+        """A fresh CSRF token should be accepted."""
+        token = _get_csrf_token(client)
+        resp = client.post("/api/memories",
+                           json={"key": "csrf-fresh", "content": "test"},
+                           headers={"X-CSRF-Token": token},
+                           content_type="application/json")
+        assert resp.status_code == 200
+
+    def test_csrf_token_tampered_rejected(self, client):
+        """A token with a tampered signature should be rejected."""
+        token = _get_csrf_token(client)
+        parts = token.split(".")
+        tampered = parts[0] + ".deadbeefdeadbeef"
+        resp = client.post("/api/memories",
+                           json={"key": "csrf-tamper", "content": "test"},
+                           headers={"X-CSRF-Token": tampered},
+                           content_type="application/json")
+        assert resp.status_code == 403
+
+
 class TestStrictCSP:
     def test_csp_has_explicit_script_src(self, client):
         resp = client.get("/")

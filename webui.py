@@ -6,12 +6,15 @@ Provides a modern web interface for memory management
 
 from flask import Flask, render_template, jsonify, request
 from pathlib import Path
+import hashlib
+import hmac
 import json
 import logging
 import os
 import re as _re
 import secrets
 import sys
+import time as _time
 
 # Add parent directory to path to import memory_manager
 sys.path.insert(0, str(Path(__file__).parent))
@@ -23,10 +26,34 @@ app = Flask(__name__)
 app.secret_key = os.urandom(32)
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB
 
-# CSRF token (module-level, stable for app lifetime)
-_csrf_token = secrets.token_hex(32)
-
 logger = logging.getLogger(__name__)
+
+CSRF_TOKEN_LIFETIME = 3600  # 1 hour
+
+
+def _generate_csrf_token() -> str:
+    """Generate an HMAC-signed CSRF token with embedded timestamp."""
+    ts = str(int(_time.time()))
+    sig = hmac.new(app.secret_key, ts.encode(), hashlib.sha256).hexdigest()
+    return f"{ts}.{sig}"
+
+
+def _validate_csrf_token(token: str) -> bool:
+    """Validate a CSRF token: check signature and expiry."""
+    if "." not in token:
+        return False
+    parts = token.split(".", 1)
+    if len(parts) != 2:
+        return False
+    ts_str, sig = parts
+    try:
+        ts = int(ts_str)
+    except ValueError:
+        return False
+    if _time.time() - ts > CSRF_TOKEN_LIFETIME:
+        return False
+    expected_sig = hmac.new(app.secret_key, ts_str.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sig, expected_sig)
 
 # ─── Validation constants ───
 MAX_CONTENT_SIZE = _parse_max_size()
@@ -73,7 +100,7 @@ def add_security_headers(response):
 def csrf_protect():
     if request.method in ("POST", "PUT", "DELETE"):
         token = request.headers.get("X-CSRF-Token", "")
-        if token != _csrf_token:
+        if not _validate_csrf_token(token):
             return jsonify({"success": False, "error": "CSRF token invalid"}), 403
 
 
@@ -88,7 +115,7 @@ def request_too_large(e):
 @app.route("/")
 def index():
     """Serve the main WebUI page"""
-    return render_template("index.html", csrf_token=_csrf_token)
+    return render_template("index.html", csrf_token=_generate_csrf_token())
 
 
 @app.route("/api/memories", methods=["GET"])
