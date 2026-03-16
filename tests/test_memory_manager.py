@@ -150,3 +150,51 @@ class TestErrorHandling:
         result = manager.retrieve_memory("alive")
         assert result["content"] == "test"
         assert manager.retrieve_memory("nonexistent") is None
+
+
+class TestSetImmutable:
+    def test_set_immutable_true(self, manager):
+        manager.store_memory("imm-test", "content", source="test", created_by="test")
+        result = manager.set_immutable("imm-test", True)
+        assert result is not None
+        assert result["immutable"] is True
+        mem = manager.retrieve_memory("imm-test")
+        assert mem["immutable"] is True
+
+    def test_set_immutable_false(self, manager):
+        manager.store_memory("imm-test2", "content", source="test", created_by="test")
+        manager.set_immutable("imm-test2", True)
+        result = manager.set_immutable("imm-test2", False)
+        assert result["immutable"] is False
+
+    def test_set_immutable_nonexistent_returns_none(self, manager):
+        result = manager.set_immutable("no-such-key", True)
+        assert result is None
+
+
+class TestListMemoriesDecryptParam:
+    def test_list_memories_no_decrypt(self, manager):
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "test-key"}):
+            manager.store_memory("enc-list", "secret content", source="test", created_by="test")
+            memories = manager.list_memories(decrypt_content=False)
+            assert len(memories) == 1
+            assert memories[0]["content"] != "secret content"
+            assert memories[0]["encrypted"] is True
+
+
+class TestAuditEntry:
+    def test_audit_entry_appended_to_content(self, manager):
+        manager.store_memory(
+            "audit-test", "base content",
+            source="test", created_by="test",
+            audit_entry="Created via test",
+        )
+        mem = manager.retrieve_memory("audit-test")
+        assert "base content" in mem["content"]
+        assert "Created via test" in mem["content"]
+        assert "---" in mem["content"]
+
+    def test_no_audit_entry_leaves_content_unchanged(self, manager):
+        manager.store_memory("no-audit", "plain content", source="test", created_by="test")
+        mem = manager.retrieve_memory("no-audit")
+        assert mem["content"] == "plain content"

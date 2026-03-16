@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 
 from core.encryption import encrypt, decrypt, is_encryption_enabled
+from core.utils import now_timestamp
 
 # Configuration
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -84,16 +85,17 @@ class MemoryManager:
         self,
         key: str,
         content: str,
-        tags: List[str] = None,
-        title: str = None,
+        tags: Optional[List[str]] = None,
+        title: Optional[str] = None,
         source: str = "unknown",
         created_by: str = "unknown",
         suspicious: bool = False,
-        matched_patterns: List[str] = None,
+        matched_patterns: Optional[List[str]] = None,
+        audit_entry: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Store a new memory or overwrite an existing one."""
         file_path = self._get_file_path(key)
-        now = datetime.now().astimezone().isoformat()
+        now = now_timestamp()
 
         memory_data = {
             "key": key,
@@ -111,6 +113,14 @@ class MemoryManager:
             "matched_patterns": matched_patterns or [],
             "encrypted": False,
         }
+
+        # Append audit entry if provided
+        if audit_entry:
+            timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+            content = f"{content}\n\n---\n**{timestamp} | {audit_entry}**"
+            memory_data["content"] = content
+            memory_data["chars"] = len(content)
+            memory_data["lines"] = len(content.splitlines())
 
         # If updating, preserve created_at, title, source, created_by, immutable
         existing_path = self._migrate_if_needed(key)
@@ -156,7 +166,7 @@ class MemoryManager:
 
         return data
 
-    def list_memories(self) -> List[Dict[str, Any]]:
+    def list_memories(self, decrypt_content: bool = True) -> List[Dict[str, Any]]:
         """List all memories with metadata."""
         memories = []
         for file_path in self.cache_dir.glob("*.json"):
@@ -165,7 +175,7 @@ class MemoryManager:
                     data = json.load(f)
                 data = self._apply_schema_defaults(data)
                 # Decrypt content for search/snippet
-                if data.get("encrypted"):
+                if decrypt_content and data.get("encrypted"):
                     data["content"] = decrypt(data["content"])
                 # Add a snippet for display
                 data["snippet"] = (
@@ -208,6 +218,23 @@ class MemoryManager:
             legacy_path.unlink()
             return True
         return False
+
+    def set_immutable(self, key: str, value: bool = True) -> Optional[Dict]:
+        """Set the immutable flag on a memory. Returns updated data or None if not found."""
+        file_path = self._migrate_if_needed(key)
+        if file_path is None:
+            file_path = self._get_file_path(key)
+        if not file_path.exists():
+            return None
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return None
+        data = self._apply_schema_defaults(data)
+        data["immutable"] = bool(value)
+        self._write_json(file_path, data)
+        return data
 
     def get_stats(self) -> Dict[str, Any]:
         """Get memory statistics."""
