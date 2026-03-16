@@ -61,7 +61,8 @@ def generate_config(python_path):
     config_path = Path("mcp_config.json")
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
-    
+    os.chmod(config_path, 0o600)
+
     print(f"[+] Created {config_path.name}")
     return config
 

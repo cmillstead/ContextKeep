@@ -12,8 +12,8 @@ Salt handling:
 
 import os
 import base64
+import functools
 import pathlib
-from typing import Dict, Tuple
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
@@ -38,13 +38,20 @@ def _get_salt_path() -> pathlib.Path:
     return PROJECT_ROOT / ".contextkeep_salt"
 
 
+_salt_checked = False
+
+
 def _load_or_create_salt() -> bytes:
     """Load the random salt from disk, or create & persist a new one.
 
     Uses O_EXCL for race-free creation and sets 0o600 permissions.
     """
+    global _salt_checked
     salt_path = _get_salt_path()
     if salt_path.exists():
+        if not _salt_checked:
+            check_salt_permissions()
+            _salt_checked = True
         return salt_path.read_bytes()
     salt = os.urandom(16)
     salt_path.parent.mkdir(parents=True, exist_ok=True)
@@ -85,9 +92,6 @@ def check_salt_permissions() -> bool:
 # Key derivation & Fernet cache
 # ---------------------------------------------------------------------------
 
-_fernet_cache: Dict[Tuple[str, bytes], Fernet] = {}
-
-
 def _derive_key(secret: str, salt: bytes) -> bytes:
     """Derive a Fernet key from a passphrase and salt using PBKDF2."""
     kdf = PBKDF2HMAC(
@@ -99,13 +103,11 @@ def _derive_key(secret: str, salt: bytes) -> bytes:
     return base64.urlsafe_b64encode(kdf.derive(secret.encode()))
 
 
+@functools.lru_cache(maxsize=4)
 def _get_fernet(secret: str, salt: bytes) -> Fernet:
-    """Return a cached Fernet instance for the given (secret, salt) pair."""
-    cache_key = (secret, salt)
-    if cache_key not in _fernet_cache:
-        key = _derive_key(secret, salt)
-        _fernet_cache[cache_key] = Fernet(key)
-    return _fernet_cache[cache_key]
+    """Return a cached Fernet instance (LRU, max 4 entries)."""
+    key = _derive_key(secret, salt)
+    return Fernet(key)
 
 
 # ---------------------------------------------------------------------------

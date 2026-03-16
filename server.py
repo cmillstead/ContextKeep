@@ -14,7 +14,7 @@ import argparse
 from fastmcp import FastMCP
 from core.memory_manager import memory_manager
 from core.content_scanner import scan_all_fields
-from core.utils import RateLimiter as _RateLimiter, _parse_max_size
+from core.utils import RateLimiter as _RateLimiter, _parse_max_size, validate_key, validate_title, validate_tags
 
 logger = logging.getLogger("contextkeep")
 
@@ -72,21 +72,25 @@ async def store_memory(key: str, content: str, tags: str = "", title: str = "") 
         logger.warning("Content too large for key='%s' (%d bytes)", key, content_bytes)
         return "Content too large (max %d bytes)." % MAX_CONTENT_SIZE
 
-    # --- Gate: immutability ---
-    existing = memory_manager.retrieve_memory(key)
-    if existing and existing.get("immutable"):
-        logger.warning("Blocked write to immutable key='%s'", key)
-        return "Memory '%s' is immutable (LOCKED). Cannot overwrite via MCP." % key
+    # --- Gate: input validation ---
+    key_error = validate_key(key)
+    if key_error:
+        return key_error
+    title_error = validate_title(title)
+    if title_error:
+        return title_error
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+    tag_error = validate_tags(tag_list)
+    if tag_error:
+        return tag_error
 
     # --- Content scanning ---
-    tag_list = [t.strip() for t in tags.split(",")] if tags else []
     scan = scan_all_fields(key=key, title=title, tags=tag_list, content=content)
     if scan["suspicious"]:
         logger.warning("Suspicious content detected in key='%s': patterns=%s", key, scan["matched_patterns"])
 
     try:
-
-        audit = "AI Update via MCP" if existing else "Created via MCP"
+        audit = "Updated via MCP"
 
         result = memory_manager.store_memory(
             key,
@@ -104,6 +108,10 @@ async def store_memory(key: str, content: str, tags: str = "", title: str = "") 
         return "Memory stored: '%s' (Key: %s) (%d chars)%s" % (
             result["title"], key, result["chars"], flags,
         )
+    except ValueError as e:
+        if "immutable" in str(e):
+            return "Memory '%s' is immutable (LOCKED). Cannot overwrite via MCP." % key
+        raise
     except Exception as e:
         logger.error("store_memory failed: %s", e)
         raise
@@ -122,10 +130,14 @@ async def retrieve_memory(key: str) -> str:
         result = memory_manager.retrieve_memory(key)
         if result:
             flags = _provenance_flags(result)
+            warning = ""
+            if result.get("suspicious"):
+                patterns = ", ".join(result.get("matched_patterns", []))
+                warning = "[WARNING: Content flagged as suspicious. Matched: %s]\n\n" % patterns
             logger.debug("retrieve_memory found key='%s'", key)
-            return "Memory: %s%s\nKey: %s\nUpdated: %s\n\n%s" % (
+            return "Memory: %s%s\nKey: %s\nUpdated: %s\n\n%s%s" % (
                 result.get("title", key), flags, result["key"],
-                result["updated_at"], result["content"],
+                result["updated_at"], warning, result["content"],
             )
         logger.debug("retrieve_memory NOT found key='%s'", key)
         return "Memory not found: '%s'" % key
@@ -234,13 +246,12 @@ async def delete_memory(key: str, confirm: str) -> str:
     if confirm != expected:
         return "Confirmation failed. To delete '%s', pass confirm='%s'." % (key, expected)
 
-    # Check immutability
-    existing = memory_manager.retrieve_memory(key)
-    if existing and existing.get("immutable"):
-        logger.warning("Blocked delete of immutable key='%s'", key)
-        return "Memory '%s' is immutable (LOCKED). Cannot delete via MCP." % key
-
-    deleted = memory_manager.delete_memory(key)
+    try:
+        deleted = memory_manager.delete_memory(key)
+    except ValueError as e:
+        if "immutable" in str(e):
+            return "Memory '%s' is immutable (LOCKED). Cannot delete via MCP." % key
+        raise
     if deleted:
         logger.info("Deleted memory key='%s'", key)
         return "Memory '%s' deleted." % key

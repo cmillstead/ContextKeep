@@ -11,7 +11,6 @@ import hmac
 import json
 import logging
 import os
-import re as _re
 import secrets
 import sys
 import time as _time
@@ -20,9 +19,12 @@ import time as _time
 sys.path.insert(0, str(Path(__file__).parent))
 from core.memory_manager import memory_manager
 from core.content_scanner import scan_all_fields
-from core.utils import RateLimiter as _RateLimiter, _parse_max_size
+from core.utils import RateLimiter as _RateLimiter, _parse_max_size, validate_key, validate_title, validate_tags, MAX_KEY_LENGTH
 
 app = Flask(__name__)
+# Secret key is generated per-process. On restart, all outstanding CSRF tokens
+# become invalid and users must refresh the page. This is expected behavior
+# for a localhost deployment. Persistent secret_key would require secure storage.
 app.secret_key = os.urandom(32)
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB
 
@@ -57,29 +59,10 @@ def _validate_csrf_token(token: str) -> bool:
 
 # ─── Validation constants ───
 MAX_CONTENT_SIZE = _parse_max_size()
-MAX_KEY_LENGTH = 256
-MAX_TAGS = 20
-MAX_TAG_LENGTH = 50
-_TAG_PATTERN = _re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9 _-]*$')
 
 ALLOWED_ACTIONS = {"Manual Edit", "Manual Edit via WebUI", "Content Update", "Title Update", "Tag Update"}
 
 _write_limiter = _RateLimiter(max_calls=20, window=60)
-
-
-def _validate_tags(tags):
-    if not isinstance(tags, list):
-        return "Tags must be a list"
-    if len(tags) > MAX_TAGS:
-        return "Too many tags (max %d)" % MAX_TAGS
-    for tag in tags:
-        if not isinstance(tag, str):
-            return "Each tag must be a string"
-        if len(tag) > MAX_TAG_LENGTH:
-            return "Tag too long (max %d chars)" % MAX_TAG_LENGTH
-        if tag and not _TAG_PATTERN.match(tag):
-            return "Tag contains invalid characters"
-    return None
 
 
 # ─── Security Middleware ───
@@ -167,7 +150,7 @@ def create_memory():
         if len(content.encode("utf-8")) > MAX_CONTENT_SIZE:
             return jsonify({"success": False, "error": "Content too large (max %d bytes)" % MAX_CONTENT_SIZE}), 413
 
-        tag_error = _validate_tags(tags)
+        tag_error = validate_tags(tags)
         if tag_error:
             return jsonify({"success": False, "error": tag_error}), 400
 
@@ -208,7 +191,7 @@ def update_memory(key):
         if len(content.encode("utf-8")) > MAX_CONTENT_SIZE:
             return jsonify({"success": False, "error": "Content too large (max %d bytes)" % MAX_CONTENT_SIZE}), 413
 
-        tag_error = _validate_tags(tags)
+        tag_error = validate_tags(tags)
         if tag_error:
             return jsonify({"success": False, "error": tag_error}), 400
 

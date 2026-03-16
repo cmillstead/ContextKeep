@@ -17,10 +17,12 @@ from core.encryption import encrypt, decrypt, is_encryption_enabled
 def salt_dir(tmp_path):
     """Redirect PROJECT_ROOT to a temporary directory so each test gets
     its own salt file, and clear the Fernet cache between tests."""
-    enc._fernet_cache.clear()
+    enc._get_fernet.cache_clear()
+    enc._salt_checked = False
     with patch.object(enc, "PROJECT_ROOT", tmp_path):
         yield tmp_path
-    enc._fernet_cache.clear()
+    enc._get_fernet.cache_clear()
+    enc._salt_checked = False
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +75,7 @@ def test_different_secrets_produce_different_ciphertext():
     plaintext = "Same content"
     with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "secret-one"}):
         ct1 = encrypt(plaintext)
-    enc._fernet_cache.clear()
+    enc._get_fernet.cache_clear()
     with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "secret-two"}):
         ct2 = encrypt(plaintext)
     assert ct1 != ct2
@@ -84,7 +86,7 @@ def test_wrong_secret_fails_decrypt(salt_dir):
     plaintext = "Sensitive data"
     with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "correct-secret"}):
         ciphertext = encrypt(plaintext)
-    enc._fernet_cache.clear()
+    enc._get_fernet.cache_clear()
     with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "wrong-secret"}):
         with pytest.raises(DecryptionError):
             decrypt(ciphertext)
@@ -126,7 +128,7 @@ class TestSaltFile:
         with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "test-secret"}):
             encrypt("first")
             salt_after_first = (salt_dir / ".contextkeep_salt").read_bytes()
-            enc._fernet_cache.clear()
+            enc._get_fernet.cache_clear()
             encrypt("second")
             salt_after_second = (salt_dir / ".contextkeep_salt").read_bytes()
         assert salt_after_first == salt_after_second
@@ -178,7 +180,7 @@ class TestBackwardCompatDecrypt:
         with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": secret}):
             # Trigger salt file creation with random salt
             encrypt("trigger")
-            enc._fernet_cache.clear()
+            enc._get_fernet.cache_clear()
 
             # decrypt should fall back to static salt and succeed
             result = decrypt(legacy_token)
@@ -246,7 +248,7 @@ class TestDecryptionError:
         from core.encryption import DecryptionError
         with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "test-secret"}):
             encrypt("trigger salt")
-            enc._fernet_cache.clear()
+            enc._get_fernet.cache_clear()
             with pytest.raises(DecryptionError):
                 decrypt("not-a-valid-fernet-token")
 
@@ -255,7 +257,7 @@ class TestDecryptionError:
         from core.encryption import DecryptionError
         with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "correct-key"}):
             ct = encrypt("secret")
-        enc._fernet_cache.clear()
+        enc._get_fernet.cache_clear()
         with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "wrong-key"}):
             with pytest.raises(DecryptionError):
                 decrypt(ct)
@@ -264,3 +266,78 @@ class TestDecryptionError:
         """DecryptionError should be a ValueError subclass."""
         from core.encryption import DecryptionError
         assert issubclass(DecryptionError, ValueError)
+
+
+# ---------------------------------------------------------------------------
+# TestSaltPermissionsOnLoad (Task 1.2)
+# ---------------------------------------------------------------------------
+
+
+class TestSaltPermissionsOnLoad:
+    """check_salt_permissions is called once when loading an existing salt."""
+
+    def test_load_salt_calls_check_permissions(self, salt_dir):
+        """_load_or_create_salt should call check_salt_permissions on existing salt."""
+        salt_path = salt_dir / ".contextkeep_salt"
+        salt_path.write_bytes(os.urandom(16))
+        os.chmod(salt_path, 0o644)
+
+        import logging
+        with patch.dict(os.environ, {"CONTEXTKEEP_SECRET": "test-secret"}):
+            with patch("core.encryption.check_salt_permissions", wraps=enc.check_salt_permissions) as mock_check:
+                enc._load_or_create_salt()
+                assert mock_check.call_count == 1
+
+    def test_load_salt_warns_on_bad_permissions(self, salt_dir):
+        """Loading salt with 0o644 should log a warning."""
+        import logging
+        salt_path = salt_dir / ".contextkeep_salt"
+        salt_path.write_bytes(os.urandom(16))
+        os.chmod(salt_path, 0o644)
+
+        logger = logging.getLogger("contextkeep.encryption")
+        with patch.object(logger, "warning") as mock_warn:
+            enc._load_or_create_salt()
+            assert mock_warn.call_count == 1
+
+    def test_salt_check_only_once(self, salt_dir):
+        """check_salt_permissions should only be called once (cached flag)."""
+        salt_path = salt_dir / ".contextkeep_salt"
+        salt_path.write_bytes(os.urandom(16))
+        os.chmod(salt_path, 0o600)
+
+        with patch("core.encryption.check_salt_permissions", wraps=enc.check_salt_permissions) as mock_check:
+            enc._load_or_create_salt()
+            enc._load_or_create_salt()
+            enc._load_or_create_salt()
+            assert mock_check.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# TestLRUFernetCache (Task 1.3)
+# ---------------------------------------------------------------------------
+
+
+class TestLRUFernetCache:
+    """Fernet cache is an LRU cache with maxsize=4."""
+
+    def test_cache_maxsize_is_4(self, salt_dir):
+        assert enc._get_fernet.cache_info().maxsize == 4
+
+    def test_cache_hits_on_repeated_calls(self, salt_dir):
+        salt = enc._load_or_create_salt()
+        enc._get_fernet.cache_clear()
+        enc._get_fernet("secret", salt)
+        enc._get_fernet("secret", salt)
+        info = enc._get_fernet.cache_info()
+        assert info.hits >= 1
+        assert info.misses >= 1
+
+    def test_cache_evicts_beyond_maxsize(self, salt_dir):
+        """After 5 distinct entries, the first should be evicted."""
+        enc._get_fernet.cache_clear()
+        salts = [os.urandom(16) for _ in range(5)]
+        for s in salts:
+            enc._get_fernet("secret", s)
+        info = enc._get_fernet.cache_info()
+        assert info.currsize == 4  # maxsize=4, so oldest evicted
