@@ -198,16 +198,38 @@ class MemoryManager:
 
     def search_memories(self, query: str) -> List[Dict[str, Any]]:
         """Search memories by key, title, or content."""
-        query = query.lower()
+        query_lower = query.lower()
         results = []
-        all_memories = self.list_memories()
-
+        # First pass: search key/title without decrypting content
+        all_memories = self.list_memories(decrypt_content=False)
+        needs_content_search = []
         for mem in all_memories:
             if (
-                query in mem["key"].lower()
-                or query in mem.get("title", "").lower()
-                or query in mem["content"].lower()
+                query_lower in mem["key"].lower()
+                or query_lower in mem.get("title", "").lower()
             ):
+                # Match on key/title — decrypt content for the result
+                if mem.get("encrypted"):
+                    mem["content"] = decrypt(mem["content"])
+                    mem["snippet"] = (
+                        mem["content"][:100] + "..."
+                        if len(mem["content"]) > 100
+                        else mem["content"]
+                    )
+                results.append(mem)
+            else:
+                needs_content_search.append(mem)
+
+        # Second pass: decrypt and search content only for non-matches
+        for mem in needs_content_search:
+            if mem.get("encrypted"):
+                mem["content"] = decrypt(mem["content"])
+                mem["snippet"] = (
+                    mem["content"][:100] + "..."
+                    if len(mem["content"]) > 100
+                    else mem["content"]
+                )
+            if query_lower in mem["content"].lower():
                 results.append(mem)
 
         return results

@@ -1,16 +1,6 @@
 import os
 import pytest
 from unittest.mock import patch
-from core.memory_manager import MemoryManager
-
-
-@pytest.fixture
-def manager(tmp_path):
-    data_dir = tmp_path / "data" / "memories"
-    data_dir.mkdir(parents=True)
-    mgr = MemoryManager()
-    mgr.cache_dir = data_dir
-    return mgr
 
 
 class TestEncryptExisting:

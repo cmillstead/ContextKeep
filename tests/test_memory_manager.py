@@ -8,15 +8,6 @@ from unittest.mock import patch
 from core.memory_manager import MemoryManager
 
 
-@pytest.fixture
-def manager(tmp_path):
-    """Create a MemoryManager with a temp data directory."""
-    data_dir = tmp_path / "data" / "memories"
-    data_dir.mkdir(parents=True)
-    mgr = MemoryManager()
-    mgr.cache_dir = data_dir
-    return mgr
-
 
 class TestSHA256Migration:
     def test_new_memory_uses_sha256_filename(self, manager):
