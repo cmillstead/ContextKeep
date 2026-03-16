@@ -8,13 +8,72 @@ import asyncio
 import sys
 import json
 import os
+import hashlib
+import logging
 import argparse
+import threading
+import time
 from fastmcp import FastMCP
 from core.memory_manager import memory_manager
+from core.content_scanner import scan_content
+
+logger = logging.getLogger("contextkeep")
 
 # Initialize FastMCP
 mcp = FastMCP("context-keep")
 
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+MAX_CONTENT_SIZE = int(os.environ.get("CONTEXTKEEP_MAX_SIZE", 100 * 1024))  # 100 KB
+RATE_LIMIT_WRITES = 20   # per minute
+RATE_LIMIT_WINDOW = 60   # seconds
+
+
+# ---------------------------------------------------------------------------
+# Rate limiter (thread-safe sliding window)
+# ---------------------------------------------------------------------------
+class _RateLimiter:
+    """Thread-safe sliding-window rate limiter."""
+
+    def __init__(self, max_calls: int = RATE_LIMIT_WRITES, window: float = RATE_LIMIT_WINDOW):
+        self.max_calls = max_calls
+        self.window = window
+        self._timestamps: list[float] = []
+        self._lock = threading.Lock()
+
+    def allow(self) -> bool:
+        """Return True if the call is within the rate limit, and record it."""
+        now = time.monotonic()
+        with self._lock:
+            # Evict expired entries
+            cutoff = now - self.window
+            self._timestamps = [t for t in self._timestamps if t > cutoff]
+            if len(self._timestamps) >= self.max_calls:
+                return False
+            self._timestamps.append(now)
+            return True
+
+
+_write_limiter = _RateLimiter()
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _provenance_flags(mem: dict) -> str:
+    """Return provenance flag string for display."""
+    flags = []
+    if mem.get("immutable"):
+        flags.append("LOCKED")
+    if mem.get("suspicious"):
+        flags.append("SUSPICIOUS")
+    return f" [{', '.join(flags)}]" if flags else ""
+
+
+# ---------------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------------
 
 @mcp.tool()
 async def store_memory(key: str, content: str, tags: str = "", title: str = "") -> str:
@@ -27,29 +86,57 @@ async def store_memory(key: str, content: str, tags: str = "", title: str = "") 
         tags: Comma-separated list of tags (optional).
         title: Human-readable title (optional).
     """
-    print(f"DEBUG: store_memory called for key='{key}'")
+    logger.debug("store_memory called for key='%s'", key)
+
+    # --- Gate: rate limit ---
+    if not _write_limiter.allow():
+        logger.warning("Rate limit exceeded for store_memory key='%s'", key)
+        return "Rate limit exceeded (max %d writes/min). Try again later." % RATE_LIMIT_WRITES
+
+    # --- Gate: content size ---
+    if len(content.encode("utf-8")) > MAX_CONTENT_SIZE:
+        logger.warning("Content too large for key='%s' (%d bytes)", key, len(content.encode("utf-8")))
+        return "Content too large (max %d bytes)." % MAX_CONTENT_SIZE
+
+    # --- Gate: immutability ---
+    existing = memory_manager.retrieve_memory(key)
+    if existing and existing.get("immutable"):
+        logger.warning("Blocked write to immutable key='%s'", key)
+        return "Memory '%s' is immutable (LOCKED). Cannot overwrite via MCP." % key
+
+    # --- Content scanning ---
+    scan = scan_content(content)
+
     try:
         tag_list = [t.strip() for t in tags.split(",")] if tags else []
 
-        # Add edit history for updates
-        existing = memory_manager.retrieve_memory(key)
-        
         # Create timestamp
         from datetime import datetime
         timestamp = datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')
-        
+
         # Append log to content
-        # This matches the WebUI's logging format for consistency
         if existing:
             content = f"{content}\n\n---\n**{timestamp} | AI Update via MCP**"
         else:
             content = f"{content}\n\n---\n**{timestamp} | Created via MCP**"
 
-        result = memory_manager.store_memory(key, content, tag_list, title)
-        print(f"DEBUG: store_memory success for key='{key}'")
-        return f"✅ Memory stored: '{result['title']}' (Key: {key}) ({result['chars']} chars)"
+        result = memory_manager.store_memory(
+            key,
+            content,
+            tag_list,
+            title,
+            source="mcp",
+            created_by="mcp-tool",
+            suspicious=scan["suspicious"],
+            matched_patterns=scan["matched_patterns"],
+        )
+        flags = _provenance_flags(result)
+        logger.debug("store_memory success for key='%s'", key)
+        return "Memory stored: '%s' (Key: %s) (%d chars)%s" % (
+            result["title"], key, result["chars"], flags,
+        )
     except Exception as e:
-        print(f"DEBUG: store_memory failed: {e}")
+        logger.error("store_memory failed: %s", e)
         raise
 
 
@@ -61,16 +148,20 @@ async def retrieve_memory(key: str) -> str:
     Args:
         key: The unique identifier of the memory.
     """
-    print(f"DEBUG: retrieve_memory called for key='{key}'")
+    logger.debug("retrieve_memory called for key='%s'", key)
     try:
         result = memory_manager.retrieve_memory(key)
         if result:
-            print(f"DEBUG: retrieve_memory found key='{key}'")
-            return f"📦 Memory: {result.get('title', key)}\n🔑 Key: {result['key']}\n📅 Updated: {result['updated_at']}\n\n{result['content']}"
-        print(f"DEBUG: retrieve_memory NOT found key='{key}'")
-        return f"❌ Memory not found: '{key}'"
+            flags = _provenance_flags(result)
+            logger.debug("retrieve_memory found key='%s'", key)
+            return "Memory: %s%s\nKey: %s\nUpdated: %s\n\n%s" % (
+                result.get("title", key), flags, result["key"],
+                result["updated_at"], result["content"],
+            )
+        logger.debug("retrieve_memory NOT found key='%s'", key)
+        return "Memory not found: '%s'" % key
     except Exception as e:
-        print(f"DEBUG: retrieve_memory failed: {e}")
+        logger.error("retrieve_memory failed: %s", e)
         raise
 
 
@@ -82,42 +173,46 @@ async def search_memories(query: str) -> str:
     Args:
         query: The search term.
     """
-    print(f"DEBUG: search_memories called for query='{query}'")
+    logger.debug("search_memories called for query='%s'", query)
     try:
         results = memory_manager.search_memories(query)
         if not results:
-            print(f"DEBUG: search_memories found 0 results")
-            return f"🔍 No memories found for '{query}'"
+            logger.debug("search_memories found 0 results")
+            return "No memories found for '%s'" % query
 
-        print(f"DEBUG: search_memories found {len(results)} results")
-        output = f"🔍 Found {len(results)} memories for '{query}':\n\n"
+        logger.debug("search_memories found %d results", len(results))
+        output = "Found %d memories for '%s':\n\n" % (len(results), query)
         for mem in results:
             title = mem.get("title", mem["key"])
-            output += f"- **{title}** (Key: {mem['key']}) ({mem['updated_at'][:16]}): {mem['snippet']}\n"
+            flags = _provenance_flags(mem)
+            output += "- %s%s (Key: %s) (%s): %s\n" % (
+                title, flags, mem["key"], mem["updated_at"][:16], mem["snippet"],
+            )
         return output
     except Exception as e:
-        print(f"DEBUG: search_memories failed: {e}")
+        logger.error("search_memories failed: %s", e)
         raise
 
 
 @mcp.tool()
 async def list_recent_memories() -> str:
     """List the 10 most recently updated memories."""
-    print("DEBUG: list_recent_memories called")
+    logger.debug("list_recent_memories called")
     try:
         memories = memory_manager.list_memories()[:10]
         if not memories:
-            print("DEBUG: list_recent_memories found 0 memories")
-            return "📭 No memories found."
+            logger.debug("list_recent_memories found 0 memories")
+            return "No memories found."
 
-        print(f"DEBUG: list_recent_memories found {len(memories)} memories")
-        output = "📚 Recent Memories:\n"
+        logger.debug("list_recent_memories found %d memories", len(memories))
+        output = "Recent Memories:\n"
         for mem in memories:
             title = mem.get("title", mem["key"])
-            output += f"- {title} (Key: {mem['key']}) - {mem['updated_at'][:16]}\n"
+            flags = _provenance_flags(mem)
+            output += "- %s%s (Key: %s) - %s\n" % (title, flags, mem["key"], mem["updated_at"][:16])
         return output
     except Exception as e:
-        print(f"DEBUG: list_recent_memories failed: {e}")
+        logger.error("list_recent_memories failed: %s", e)
         raise
 
 
@@ -130,30 +225,96 @@ async def list_all_memories() -> str:
     exact key. Pick the correct key from this list, then call retrieve_memory(key) directly.
     This avoids unreliable fuzzy search and ensures accurate retrieval in one extra call.
     """
-    print("DEBUG: list_all_memories called")
+    logger.debug("list_all_memories called")
     try:
         memories = memory_manager.list_memories()
         if not memories:
-            print("DEBUG: list_all_memories found 0 memories")
-            return "📭 No memories stored yet."
+            logger.debug("list_all_memories found 0 memories")
+            return "No memories stored yet."
 
-        print(f"DEBUG: list_all_memories found {len(memories)} memories")
-        output = f"📚 Memory Directory — {len(memories)} total memories:\n"
+        logger.debug("list_all_memories found %d memories", len(memories))
+        output = "Memory Directory — %d total memories:\n" % len(memories)
         output += "=" * 50 + "\n\n"
         for mem in memories:
             title = mem.get("title", mem["key"])
             tags = ", ".join(mem.get("tags", [])) if mem.get("tags") else "none"
             updated = mem.get("updated_at", "")[:16]
-            output += f"🔑 Key:     {mem['key']}\n"
-            output += f"   Title:   {title}\n"
-            output += f"   Tags:    {tags}\n"
-            output += f"   Updated: {updated}\n\n"
+            flags = _provenance_flags(mem)
+            output += "Key:     %s%s\n" % (mem["key"], flags)
+            output += "   Title:   %s\n" % title
+            output += "   Tags:    %s\n" % tags
+            output += "   Updated: %s\n\n" % updated
         return output
     except Exception as e:
-        print(f"DEBUG: list_all_memories failed: {e}")
+        logger.error("list_all_memories failed: %s", e)
         raise
 
 
+@mcp.tool()
+async def delete_memory(key: str, confirm: str) -> str:
+    """
+    Delete a memory permanently. Requires a confirmation code.
+
+    Args:
+        key: The unique identifier of the memory to delete.
+        confirm: First 8 characters of sha256(key) as confirmation.
+    """
+    logger.debug("delete_memory called for key='%s'", key)
+
+    expected = hashlib.sha256(key.encode()).hexdigest()[:8]
+    if confirm != expected:
+        return "Confirmation failed. To delete '%s', pass confirm='%s'." % (key, expected)
+
+    # Check immutability
+    existing = memory_manager.retrieve_memory(key)
+    if existing and existing.get("immutable"):
+        logger.warning("Blocked delete of immutable key='%s'", key)
+        return "Memory '%s' is immutable (LOCKED). Cannot delete via MCP." % key
+
+    deleted = memory_manager.delete_memory(key)
+    if deleted:
+        logger.info("Deleted memory key='%s'", key)
+        return "Memory '%s' deleted." % key
+    return "Memory not found: '%s'" % key
+
+
+@mcp.tool()
+async def mark_immutable(key: str) -> str:
+    """
+    Mark a memory as immutable (LOCKED). This is one-way via MCP — only the WebUI can unlock.
+
+    Args:
+        key: The unique identifier of the memory to lock.
+    """
+    logger.debug("mark_immutable called for key='%s'", key)
+
+    file_path = memory_manager._get_file_path(key)
+    # Also check legacy migration
+    migrated = memory_manager._migrate_if_needed(key)
+    if migrated:
+        file_path = migrated
+
+    if not file_path.exists():
+        return "Memory not found: '%s'" % key
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return "Memory not found: '%s'" % key
+
+    if data.get("immutable"):
+        return "Memory '%s' is already immutable (LOCKED)." % key
+
+    data["immutable"] = True
+    memory_manager._write_json(file_path, data)
+    logger.info("Marked memory as immutable key='%s'", key)
+    return "Memory '%s' is now immutable (LOCKED). Only the WebUI can unlock it." % key
+
+
+# ---------------------------------------------------------------------------
+# Logging & CLI
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ContextKeep V1.2 - MCP Server")
     parser.add_argument(
@@ -163,16 +324,25 @@ if __name__ == "__main__":
         help="Transport protocol (default: stdio)",
     )
     parser.add_argument(
-        "--host", default="0.0.0.0", help="Host for SSE transport (default: 0.0.0.0)"
+        "--host", default="127.0.0.1", help="Host for SSE transport (default: 127.0.0.1)"
     )
     parser.add_argument(
         "--port", type=int, default=5100, help="Port for SSE transport (default: 5100)"
+    )
+    parser.add_argument(
+        "--debug", action="store_true", help="Enable DEBUG-level logging"
     )
     parser.add_argument(
         "--generate-config", action="store_true", help="Generate MCP configuration JSON"
     )
 
     args = parser.parse_args()
+
+    logging.basicConfig(
+        stream=sys.stderr,
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
     if args.generate_config:
         config = {
@@ -186,10 +356,10 @@ if __name__ == "__main__":
         print(json.dumps(config, indent=2))
     else:
         if args.transport == "sse":
-            print(
-                f"🚀 Starting MCP server with SSE transport on {args.host}:{args.port}"
+            logger.info(
+                "Starting MCP server with SSE transport on %s:%s", args.host, args.port
             )
             mcp.run(transport="sse", host=args.host, port=args.port)
         else:
-            print("🚀 Starting MCP server with stdio transport")
+            logger.info("Starting MCP server with stdio transport")
             mcp.run(transport="stdio")
