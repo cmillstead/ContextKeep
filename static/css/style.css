@@ -1,7 +1,30 @@
 /* ContextKeep V1.2 — "Obsidian Lab" Design System */
 /* Skills applied: frontend-design (DFII 14/15 — Excellent) */
 
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+/* ─── Self-hosted Fonts ─── */
+@font-face {
+    font-family: 'Space Grotesk';
+    src: url('../fonts/SpaceGrotesk-Variable.woff2') format('woff2');
+    font-weight: 300 700;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'JetBrains Mono';
+    src: url('../fonts/JetBrainsMono-Regular.woff2') format('woff2');
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'JetBrains Mono';
+    src: url('../fonts/JetBrainsMono-Medium.woff2') format('woff2');
+    font-weight: 500;
+    font-style: normal;
+    font-display: swap;
+}
 
 /* ─── Design Tokens ─── */
 :root {
@@ -698,3 +721,9 @@ header h1 {
 ::-webkit-scrollbar-track { background: var(--bg-surface); }
 ::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+/* ─── Provenance Badges ─── */
+.badge { display: inline-block; padding: 1px 7px; border-radius: 20px; font-size: 0.68rem; font-weight: 500; white-space: nowrap; margin-right: 0.25rem; }
+.badge-warning { background: rgba(250, 204, 21, 0.15); color: #facc15; border: 1px solid rgba(250, 204, 21, 0.3); }
+.badge-lock { background: rgba(96, 165, 250, 0.15); color: #60a5fa; border: 1px solid rgba(96, 165, 250, 0.3); }
+.badge-source { background: var(--cyan-dim); color: var(--cyan); border: 1px solid rgba(0, 212, 255, 0.3); }

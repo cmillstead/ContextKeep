@@ -8,6 +8,15 @@ let currentView = 'grid';
 let calendarYear = new Date().getFullYear();
 let calendarMonth = new Date().getMonth();
 
+// ─── CSRF ───
+const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+
+function fetchWithCsrf(url, options = {}) {
+    options.headers = options.headers || {};
+    options.headers['X-CSRF-Token'] = csrfToken;
+    return fetch(url, options);
+}
+
 // ─── Init ───
 document.addEventListener('DOMContentLoaded', () => {
     loadMemories();
@@ -104,6 +113,12 @@ function renderMemories(memoriesToRender) {
         const charCount = mem.chars ? formatChars(mem.chars) : '';
         const charBadge = charCount ? `<span class="char-badge">${charCount}</span>` : '';
 
+        // Provenance badges
+        let badges = '';
+        if (mem.suspicious) badges += '<span class="badge badge-warning">suspicious</span>';
+        if (mem.immutable) badges += '<span class="badge badge-lock">immutable</span>';
+        if (mem.source && mem.source !== 'unknown') badges += `<span class="badge badge-source">${escapeHtml(mem.source)}</span>`;
+
         return `
         <div class="memory-card">
             <h3>${escapeHtml(mem.title || mem.key)}</h3>
@@ -111,7 +126,7 @@ function renderMemories(memoriesToRender) {
             <p class="meta">${formatTimestamp(mem.updated_at)}</p>
             <p class="snippet">${escapeHtml(mem.snippet || '')}</p>
             <div class="card-footer">
-                <div class="card-tags">${tagHTML}</div>
+                <div class="card-tags">${tagHTML}${badges}</div>
                 ${charBadge}
             </div>
             <div class="card-actions">
@@ -232,7 +247,7 @@ async function saveNewMemory() {
     if (!content) { alert('Content is required'); return; }
 
     try {
-        const response = await fetch('/api/memories', {
+        const response = await fetchWithCsrf('/api/memories', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ key, title, content, tags: [] })
@@ -286,7 +301,7 @@ async function saveEdit() {
     const content = document.getElementById('editContent').value;
 
     try {
-        const response = await fetch(`/api/memories/${encodeURIComponent(currentKey)}`, {
+        const response = await fetchWithCsrf(`/api/memories/${encodeURIComponent(currentKey)}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ title, content, tags: [], action: 'Manual Edit via WebUI' })
@@ -311,7 +326,7 @@ function deleteMemory(key) {
 async function confirmDelete() {
     if (!currentKey) return;
     try {
-        const response = await fetch(`/api/memories/${encodeURIComponent(currentKey)}`, { method: 'DELETE' });
+        const response = await fetchWithCsrf(`/api/memories/${encodeURIComponent(currentKey)}`, { method: 'DELETE' });
         const data = await response.json();
         if (data.success) { closeAllModals(); loadMemories(); }
         else alert('Error deleting memory: ' + data.error);

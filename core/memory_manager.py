@@ -1,16 +1,27 @@
 import json
 import os
-import time
 import hashlib
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
+from core.encryption import encrypt, decrypt, is_encryption_enabled
+
 # Configuration
-# Store data relative to the project root to ensure portability between Windows/Linux in shared folders
 PROJECT_ROOT = Path(__file__).parent.parent
 CACHE_DIR = PROJECT_ROOT / "data" / "memories"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
+os.chmod(CACHE_DIR, 0o700)
+
+# Schema defaults for legacy memories missing new fields
+_SCHEMA_DEFAULTS = {
+    "source": "unknown",
+    "created_by": "unknown",
+    "immutable": False,
+    "suspicious": False,
+    "matched_patterns": [],
+    "encrypted": False,
+}
 
 
 class MemoryManager:
@@ -18,71 +29,132 @@ class MemoryManager:
         self.cache_dir = CACHE_DIR
 
     def _get_file_path(self, key: str) -> Path:
-        """Get the file path for a given memory key."""
+        """Get the SHA-256 file path for a given memory key."""
+        safe_key = hashlib.sha256(key.encode()).hexdigest()
+        return self.cache_dir / f"{safe_key}.json"
+
+    def _get_legacy_file_path(self, key: str) -> Path:
+        """Get the legacy MD5 file path for backward compatibility."""
         safe_key = hashlib.md5(key.encode()).hexdigest()
         return self.cache_dir / f"{safe_key}.json"
 
+    def _migrate_if_needed(self, key: str) -> Optional[Path]:
+        """If a SHA-256 file exists, return it. Otherwise migrate from MD5 if present."""
+        sha_path = self._get_file_path(key)
+        if sha_path.exists():
+            return sha_path
+
+        md5_path = self._get_legacy_file_path(key)
+        if md5_path.exists():
+            # Migrate: read from MD5, write to SHA-256, delete MD5
+            try:
+                with open(md5_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self._write_json(sha_path, data)
+                md5_path.unlink()
+                return sha_path
+            except (json.JSONDecodeError, OSError):
+                return None
+
+        return None
+
+    def _write_json(self, file_path: Path, data: Dict[str, Any]) -> None:
+        """Write JSON data to file with 0o600 permissions."""
+        content = json.dumps(data, indent=2, ensure_ascii=False)
+        # Open with restricted permissions from the start
+        fd = os.open(str(file_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, content.encode("utf-8"))
+        finally:
+            os.close(fd)
+        # Ensure permissions are correct even if umask interfered
+        os.chmod(file_path, 0o600)
+
+    def _apply_schema_defaults(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Add missing schema fields with safe defaults for legacy memories."""
+        for field, default in _SCHEMA_DEFAULTS.items():
+            if field not in data:
+                # Use a copy for mutable defaults
+                data[field] = default if not isinstance(default, list) else list(default)
+        if "title" not in data:
+            data["title"] = data.get("key", "")
+        return data
+
     def store_memory(
-        self, key: str, content: str, tags: List[str] = None, title: str = None
+        self,
+        key: str,
+        content: str,
+        tags: List[str] = None,
+        title: str = None,
+        source: str = "unknown",
+        created_by: str = "unknown",
+        suspicious: bool = False,
+        matched_patterns: List[str] = None,
     ) -> Dict[str, Any]:
         """Store a new memory or overwrite an existing one."""
         file_path = self._get_file_path(key)
-        # Use local system timezone
         now = datetime.now().astimezone().isoformat()
-
-        # Note: Edit history logging is now handled by the caller (server.py or webui.py)
-        # to prevent duplicate logs and allow for more context-aware messages.
 
         memory_data = {
             "key": key,
-            "title": title or key,  # Default title to key if not provided
+            "title": title or key,
             "content": content,
             "tags": tags or [],
             "created_at": now,
             "updated_at": now,
             "lines": len(content.splitlines()),
             "chars": len(content),
+            "source": source,
+            "created_by": created_by,
+            "immutable": False,
+            "suspicious": suspicious,
+            "matched_patterns": matched_patterns or [],
+            "encrypted": False,
         }
 
-        # If updating, preserve created_at and existing title if new one not provided
-        if file_path.exists():
+        # If updating, preserve created_at, title, source, created_by, immutable
+        existing_path = self._migrate_if_needed(key)
+        if existing_path and existing_path.exists():
             try:
-                with open(file_path, "r", encoding="utf-8") as f:
+                with open(existing_path, "r", encoding="utf-8") as f:
                     existing = json.load(f)
-                    memory_data["created_at"] = existing.get("created_at", now)
-                    if not title:
-                        memory_data["title"] = existing.get("title", key)
-            except:
+                memory_data["created_at"] = existing.get("created_at", now)
+                if not title:
+                    memory_data["title"] = existing.get("title", key)
+                # Preserve provenance from original write
+                memory_data["source"] = existing.get("source", source)
+                memory_data["created_by"] = existing.get("created_by", created_by)
+                memory_data["immutable"] = existing.get("immutable", False)
+            except (json.JSONDecodeError, OSError):
                 pass  # Overwrite if corrupt
 
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(memory_data, f, indent=2, ensure_ascii=False)
+        # Encrypt content if encryption is enabled
+        if is_encryption_enabled():
+            memory_data["content"] = encrypt(content)
+            memory_data["encrypted"] = True
 
+        self._write_json(file_path, memory_data)
         return memory_data
 
     def retrieve_memory(self, key: str) -> Optional[Dict[str, Any]]:
         """Retrieve a memory by key."""
-        file_path = self._get_file_path(key)
-        if not file_path.exists():
+        file_path = self._migrate_if_needed(key)
+        if file_path is None:
             return None
 
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                return data
-        except Exception as e:
-            # Silently fail - don't print to stdout as it corrupts MCP stdio transport
+        except (json.JSONDecodeError, OSError):
             return None
 
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                print(f"DEBUG: loaded data for key={key}")
-                return data
-        except Exception as e:
-            print(f"DEBUG: exception loading {key}: {e}")
-            # Silently fail - don't print to stdout as it corrupts MCP stdio transport
-            return None
+        data = self._apply_schema_defaults(data)
+
+        # Decrypt content if it was encrypted
+        if data.get("encrypted"):
+            data["content"] = decrypt(data["content"])
+
+        return data
 
     def list_memories(self) -> List[Dict[str, Any]]:
         """List all memories with metadata."""
@@ -91,17 +163,18 @@ class MemoryManager:
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    # Add a snippet for display
-                    data["snippet"] = (
-                        data["content"][:100] + "..."
-                        if len(data["content"]) > 100
-                        else data["content"]
-                    )
-                    # Ensure title exists for legacy memories
-                    if "title" not in data:
-                        data["title"] = data["key"]
-                    memories.append(data)
-            except:
+                data = self._apply_schema_defaults(data)
+                # Decrypt content for search/snippet
+                if data.get("encrypted"):
+                    data["content"] = decrypt(data["content"])
+                # Add a snippet for display
+                data["snippet"] = (
+                    data["content"][:100] + "..."
+                    if len(data["content"]) > 100
+                    else data["content"]
+                )
+                memories.append(data)
+            except (json.JSONDecodeError, OSError):
                 continue
 
         # Sort by updated_at descending
@@ -128,6 +201,11 @@ class MemoryManager:
         file_path = self._get_file_path(key)
         if file_path.exists():
             file_path.unlink()
+            return True
+        # Check legacy MD5 path
+        legacy_path = self._get_legacy_file_path(key)
+        if legacy_path.exists():
+            legacy_path.unlink()
             return True
         return False
 
