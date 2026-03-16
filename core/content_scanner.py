@@ -1,6 +1,7 @@
 """Regex-based prompt injection detector for memory content."""
 
 import re
+import unicodedata
 from typing import Dict, List, Tuple
 
 INJECTION_PATTERNS: List[Tuple[str, str]] = [
@@ -39,7 +40,8 @@ _HOMOGLYPHS: Dict[str, str] = {
 
 
 def _normalize_for_scan(text: str) -> str:
-    """Normalize text for scanning: strip invisible chars, map homoglyphs."""
+    """Normalize text for scanning: NFKC normalize, strip invisible chars, map homoglyphs."""
+    text = unicodedata.normalize("NFKC", text)
     text = _INVISIBLE_CHARS.sub("", text)
     return "".join(_HOMOGLYPHS.get(ch, ch) for ch in text)
 
