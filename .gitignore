@@ -23,6 +23,9 @@ GEMINI.md
 CLAUDE.md
 *.old
 
+# Superpowers plans and specs (local workflow, not for upstream)
+docs/superpowers/
+
 # Config (use mcp_config.example.json as the public template)
 mcp_config.json
 
