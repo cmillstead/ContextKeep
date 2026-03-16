@@ -198,3 +198,33 @@ class TestAuditEntry:
         manager.store_memory("no-audit", "plain content", source="test", created_by="test")
         mem = manager.retrieve_memory("no-audit")
         assert mem["content"] == "plain content"
+
+
+class TestStoreImmutabilityGuard:
+    def test_store_to_immutable_memory_blocked(self, manager):
+        manager.store_memory("guard-test", "original", source="test", created_by="test")
+        manager.set_immutable("guard-test", True)
+        with pytest.raises(ValueError, match="immutable"):
+            manager.store_memory("guard-test", "overwrite", source="test", created_by="test")
+
+    def test_store_to_immutable_memory_force(self, manager):
+        manager.store_memory("guard-force", "original", source="test", created_by="test")
+        manager.set_immutable("guard-force", True)
+        result = manager.store_memory(
+            "guard-force", "overwrite", source="test", created_by="test", force=True
+        )
+        assert "overwrite" in result["content"]
+
+
+class TestDeleteImmutabilityGuard:
+    def test_delete_immutable_memory_blocked(self, manager):
+        manager.store_memory("del-guard", "content", source="test", created_by="test")
+        manager.set_immutable("del-guard", True)
+        with pytest.raises(ValueError, match="immutable"):
+            manager.delete_memory("del-guard")
+
+    def test_delete_immutable_memory_force(self, manager):
+        manager.store_memory("del-force", "content", source="test", created_by="test")
+        manager.set_immutable("del-force", True)
+        assert manager.delete_memory("del-force", force=True) is True
+        assert manager.retrieve_memory("del-force") is None

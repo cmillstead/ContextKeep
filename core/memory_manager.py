@@ -92,10 +92,28 @@ class MemoryManager:
         suspicious: bool = False,
         matched_patterns: Optional[List[str]] = None,
         audit_entry: Optional[str] = None,
+        force: bool = False,
     ) -> Dict[str, Any]:
-        """Store a new memory or overwrite an existing one."""
+        """Store a new memory or overwrite an existing one.
+
+        Raises ValueError if the memory is immutable and force=False.
+        """
         file_path = self._get_file_path(key)
         now = now_timestamp()
+
+        # Defense-in-depth: check immutability at the core layer
+        if not force:
+            check_path = self._migrate_if_needed(key)
+            if check_path and check_path.exists():
+                try:
+                    with open(check_path, "r", encoding="utf-8") as f:
+                        check_data = json.load(f)
+                    if check_data.get("immutable"):
+                        raise ValueError(
+                            f"Memory '{key}' is immutable. Use force=True to override."
+                        )
+                except (json.JSONDecodeError, OSError):
+                    pass
 
         memory_data = {
             "key": key,
@@ -206,8 +224,24 @@ class MemoryManager:
 
         return results
 
-    def delete_memory(self, key: str) -> bool:
-        """Delete a memory by key."""
+    def delete_memory(self, key: str, force: bool = False) -> bool:
+        """Delete a memory by key.
+
+        Raises ValueError if the memory is immutable and force=False.
+        """
+        # Defense-in-depth: check immutability at the core layer
+        if not force:
+            check_path = self._get_file_path(key)
+            if check_path.exists():
+                try:
+                    with open(check_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if data.get("immutable"):
+                        raise ValueError(
+                            f"Memory '{key}' is immutable. Use force=True to override."
+                        )
+                except (json.JSONDecodeError, OSError):
+                    pass
         file_path = self._get_file_path(key)
         if file_path.exists():
             file_path.unlink()
